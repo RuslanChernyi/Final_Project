@@ -63,7 +63,7 @@ def sensors_latest():
 
 @app.get("/sensors/history")
 def sensors_history(hours: int = Query(6, ge=1, le=24)):   # 1 … 24 год
-    return db.get_history(hoursimage)
+    return db.get_history(hours)
 
 @app.get("/events")
 def events(limit: int = Query(10, ge=1, le=100),

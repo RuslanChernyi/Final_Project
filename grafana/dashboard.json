@@ -5,8 +5,8 @@
     "name": "adbqbrw",
     "namespace": "default",
     "uid": "b798b5b8-f7fb-458f-a700-b26f363bb18a",
-    "resourceVersion": "1791548618341009",
-    "generation": 11,
+    "resourceVersion": "1791662230983992",
+    "generation": 24,
     "creationTimestamp": "2026-10-06T18:44:59Z",
     "labels": {
       "grafana.app/deprecatedInternalID": "4361626117660672"
@@ -15,7 +15,7 @@
       "grafana.app/createdBy": "user:cg0c3qptjhce8f",
       "grafana.app/saved-from-ui": "Grafana v13.2.2 (3db12332b6)",
       "grafana.app/updatedBy": "user:cg0c3qptjhce8f",
-      "grafana.app/updatedTimestamp": "2026-10-09T12:23:38Z"
+      "grafana.app/updatedTimestamp": "2026-10-10T19:57:10Z"
     }
   },
   "spec": {
@@ -47,7 +47,7 @@
         "kind": "Panel",
         "spec": {
           "id": 1,
-          "title": "Температура за останні 30 хвилин",
+          "title": "Температура + Вологість за останні 6 годин",
           "description": "",
           "links": [],
           "data": {
@@ -75,6 +75,23 @@
                             "selector": "temperature",
                             "text": "Температура",
                             "type": "number"
+                          },
+                          {
+                            "selector": "humidity",
+                            "text": "Вологість",
+                            "type": "number"
+                          }
+                        ],
+                        "computed_columns": [
+                          {
+                            "selector": "",
+                            "text": "",
+                            "type": "string"
+                          },
+                          {
+                            "selector": "",
+                            "text": "",
+                            "type": "string"
                           }
                         ],
                         "filters": [],
@@ -84,7 +101,7 @@
                         "root_selector": "",
                         "source": "url",
                         "type": "json",
-                        "url": "http://127.0.0.1:8000/sensors/history?minutes=30",
+                        "url": "http://127.0.0.1:8000/sensors/history?hours=6",
                         "url_options": {
                           "data": "",
                           "method": "GET"
@@ -174,7 +191,29 @@
                     }
                   }
                 },
-                "overrides": []
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "scope": "series",
+                      "options": "Вологість"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "percent"
+                      },
+                      {
+                        "id": "min",
+                        "value": 0
+                      },
+                      {
+                        "id": "custom.axisPlacement",
+                        "value": "right"
+                      }
+                    ]
+                  }
+                ]
               }
             }
           }
@@ -184,7 +223,7 @@
         "kind": "Panel",
         "spec": {
           "id": 2,
-          "title": "Поточна вологість",
+          "title": "Освітленість",
           "description": "",
           "links": [],
           "data": {
@@ -204,8 +243,8 @@
                       "spec": {
                         "columns": [
                           {
-                            "selector": "humidity",
-                            "text": "Вологість, %",
+                            "selector": "light_level",
+                            "text": "Освітленність",
                             "type": "number"
                           }
                         ],
@@ -216,7 +255,7 @@
                         "root_selector": "",
                         "source": "url",
                         "type": "json",
-                        "url": "http://127.0.0.1:8000/sensors/latest",
+                        "url": "http://localhost:8000/sensors/latest",
                         "url_options": {
                           "data": "",
                           "method": "GET"
@@ -267,19 +306,19 @@
               },
               "fieldConfig": {
                 "defaults": {
-                  "unit": "percent",
+                  "unit": "lumens",
                   "min": 0,
-                  "max": 100,
+                  "max": 4095,
                   "thresholds": {
                     "mode": "absolute",
                     "steps": [
                       {
                         "value": 0,
-                        "color": "green"
+                        "color": "dark-red"
                       },
                       {
-                        "value": 80,
-                        "color": "red"
+                        "value": 1500,
+                        "color": "dark-green"
                       }
                     ]
                   },
@@ -297,7 +336,7 @@
         "kind": "Panel",
         "spec": {
           "id": 3,
-          "title": "Коли зроблений останній вимір",
+          "title": "Час роботи пристрою",
           "description": "",
           "links": [],
           "data": {
@@ -317,9 +356,9 @@
                       "spec": {
                         "columns": [
                           {
-                            "selector": "timestamp",
-                            "text": "Останнє отримане значення",
-                            "type": "timestamp_epoch_s"
+                            "selector": "uptime_sec",
+                            "text": "Uptime",
+                            "type": "number"
                           }
                         ],
                         "filters": [],
@@ -360,7 +399,7 @@
                   "calcs": [
                     "last"
                   ],
-                  "fields": "/^Останнє отримане значення$/",
+                  "fields": "/.*/",
                   "values": false
                 },
                 "showPercentChange": false,
@@ -369,6 +408,7 @@
               },
               "fieldConfig": {
                 "defaults": {
+                  "unit": "dthms",
                   "thresholds": {
                     "mode": "absolute",
                     "steps": [
@@ -383,8 +423,7 @@
                     ]
                   },
                   "color": {
-                    "mode": "fixed",
-                    "fixedColor": "#ad46ff"
+                    "mode": "fixed"
                   }
                 },
                 "overrides": []
@@ -423,7 +462,7 @@
                           }
                         ],
                         "filters": [],
-                        "format": "table",
+                        "format": "as-is",
                         "global_query_id": "",
                         "parser": "backend",
                         "root_selector": "",
@@ -497,7 +536,7 @@
         "kind": "Panel",
         "spec": {
           "id": 5,
-          "title": "Останні події пристрою",
+          "title": "Останні 10 натискань кнопки",
           "description": "",
           "links": [],
           "data": {
@@ -525,16 +564,6 @@
                             "selector": "event",
                             "text": "Подія",
                             "type": "string"
-                          },
-                          {
-                            "selector": "value",
-                            "text": "Значення",
-                            "type": "string"
-                          },
-                          {
-                            "selector": "error",
-                            "text": "Помилка",
-                            "type": "string"
                           }
                         ],
                         "filters": [],
@@ -544,7 +573,7 @@
                         "root_selector": "",
                         "source": "url",
                         "type": "json",
-                        "url": "http://127.0.0.1:8000/events?limit=20",
+                        "url": "http://127.0.0.1:8000/events?limit=10&event=manual_trigger",
                         "url_options": {
                           "data": "",
                           "method": "GET"
@@ -566,17 +595,41 @@
             "version": "13.2.2",
             "spec": {
               "options": {
-                "showHeader": true,
                 "cellHeight": "sm",
+                "showHeader": true,
                 "sortBy": [
                   {
-                    "displayName": "Час",
-                    "desc": true
+                    "desc": true,
+                    "displayName": "Час"
                   }
                 ]
               },
               "fieldConfig": {
-                "defaults": {},
+                "defaults": {
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": 0,
+                        "color": "green"
+                      },
+                      {
+                        "value": 80,
+                        "color": "red"
+                      }
+                    ]
+                  },
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    },
+                    "footer": {
+                      "reducers": []
+                    },
+                    "inspect": false
+                  }
+                },
                 "overrides": []
               }
             }
@@ -645,7 +698,7 @@
     "tags": [],
     "timeSettings": {
       "timezone": "browser",
-      "from": "now-30m",
+      "from": "now-6h",
       "to": "now",
       "autoRefresh": "30s",
       "autoRefreshIntervals": [
