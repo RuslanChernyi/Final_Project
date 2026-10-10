@@ -1,0 +1,18 @@
+{
+  "sql": "SELECT *, timestamp() AS received_at, clientid() AS client_id FROM 'iot-course/Ruslan_Chernyi/events'",
+  "awsIotSqlVersion": "2016-03-23",
+  "actions": [
+    {
+      "dynamoDBv2": {
+        "putItem": { "tableName": "iot_events" },
+        "roleArn": "arn:aws:iam::<ACCOUNT_ID>:role/iot_rule_events_ddb_role"
+      }
+    }
+  ],
+  "errorAction": {
+    "cloudwatchLogs": {
+      "logGroupName": "/aws/iot/rules/errors",
+      "roleArn": "arn:aws:iam::<ACCOUNT_ID>:role/iot_rule_cw_role"
+    }
+  }
+}

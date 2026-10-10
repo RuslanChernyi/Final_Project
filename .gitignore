@@ -1,0 +1,16 @@
+# PlatformIO
+firmware/.pio
+.vscode/
+firmware/.vscode/
+
+# Secrets — never commit
+firmware/include/secrets.h
+backend/.env
+*.pem
+*.crt
+*.key
+
+# Python
+.venv/
+__pycache__/
+*.pyc
