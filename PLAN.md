@@ -48,19 +48,19 @@
       (`topic/` для Publish і Receive, `topicfilter/` для Subscribe).
 - [ ] Скріншот CloudWatch з алармом (температура в Wokwi > 28 і < 15) → `docs/screenshots/`.
 
-## Крок 3. Бекенд: 7 ендпоінтів (11 балів)
+## Крок 3. Бекенд: 7 ендпоінтів (11 балів) — готово (лишилось оновити IAM-політику в консолі)
 
 Файли: `backend/main.py`, `backend/db.py`, `backend/iot.py`.
 
-- [ ] `/sensors/history?minutes=N` → `?hours=N` (1–24), за замовчуванням 6.
-- [ ] `/events?limit=N` — за замовчуванням 10 (для таблиці в Grafana); за бажанням фільтр лише `manual_trigger`.
+- [x] `/sensors/history?minutes=N` → `?hours=N` (1–24), за замовчуванням 6.
+- [x] `/events?limit=N` — за замовчуванням 10 (для таблиці в Grafana); за бажанням фільтр лише `manual_trigger`.
 - [x] `LedCommand.action`: `Literal["set"]` → `Literal["set_led"]`; оновити `web/index.html`.
-- [ ] Два нові ендпоінти для Shadow (уточнити у викладача, які саме очікуються; найлогічніше):
+- [x] Два нові ендпоінти для Shadow (уточнити у викладача, які саме очікуються; найлогічніше):
   - `GET /shadow` — `iot-data.get_thing_shadow()` → `reported` / `desired` / `delta`;
   - `PUT /shadow/desired` — `iot-data.update_thing_shadow()` з `{"led":"on","interval_sec":60}`.
-- [ ] IAM-політика бекенду: додати `iot:GetThingShadow`, `iot:UpdateThingShadow` на `thing/esp32-Ruslan_Chernyi`
+- [x] IAM-політика бекенду: додати `iot:GetThingShadow`, `iot:UpdateThingShadow` на `thing/esp32-Ruslan_Chernyi`
       → `aws/backend-iam-policy.json`.
-- [ ] Почистити `requirements.txt` до прямих залежностей (fastapi, uvicorn, boto3, python-dotenv).
+- [x] Почистити `requirements.txt` до прямих залежностей (fastapi, uvicorn, boto3, python-dotenv).
 
 ## Крок 4. Grafana: чотири панелі з вимог (6 балів)
 
@@ -81,7 +81,7 @@
 - [x] Policy пристрою: `$aws/things/esp32-Ruslan_Chernyi/shadow/*` — `topic/` для Publish і Receive, `topicfilter/` для Subscribe
       (без цього AWS розірве з'єднання на першому ж `shadow/get`, state=-3);
 - [ ] перевірка в консолі: **Things → esp32-Ruslan_Chernyi → Device Shadows → Classic** → змінити `desired`;
-- [ ] бекенд: `GET /shadow`, `PUT /shadow/desired` + IAM `iot:GetThingShadow`, `iot:UpdateThingShadow` (крок 3);
+- [x] бекенд: `GET /shadow`, `PUT /shadow/desired` + IAM `iot:GetThingShadow`, `iot:UpdateThingShadow` (крок 3);
 - [ ] README: розділ про Shadow і обмеження «Shadow має пріоритет над commands/led».
 
 ## Крок 6. OTA через AWS IoT Jobs, 1.0.0 → 1.1.0 (12 балів) — код готовий

@@ -7,6 +7,8 @@
         "arn:aws:dynamodb:eu-central-1:<ACCOUNT_ID>:table/iot_events"
       ] },
     { "Effect": "Allow", "Action": "iot:Publish",
-      "Resource": "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topic/iot-course/Ruslan_Chernyi/commands/*" }
+      "Resource": "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topic/iot-course/Ruslan_Chernyi/commands/*" },
+    { "Effect": "Allow", "Action": ["iot:GetThingShadow", "iot:UpdateThingShadow"],
+      "Resource": "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:thing/esp32-Ruslan_Chernyi" }
   ]
 }

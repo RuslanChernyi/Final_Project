@@ -54,7 +54,15 @@ HTML-сторінка → FastAPI → AWS IoT → ESP32 вмикає/вимик�
 ```text
 firmware/                    PlatformIO-проєкт ESP32
   platformio.ini             збірка, запінена платформа espressif32@6.13.0 і бібліотеки
-  src/main.cpp               прошивка
+  include/config.h           версія, Wi-Fi, топіки, інтервали, піни
+  src/main.cpp               setup() і loop()
+  src/network.*              Wi-Fi, TLS, NTP, MQTT-підключення, колбек-диспетчер
+  src/sensors.*              DHT22 і фоторезистор
+  src/telemetry.*            публікація телеметрії та подій
+  src/led.*, src/button.*    світлодіод (команди) і кнопка з debounce
+  src/shadow.*               Device Shadow
+  src/ota.*                  OTA через AWS IoT Jobs
+  src/power.*                RTC-пам'ять і Deep Sleep
   include/example.secrets.h  шаблон сертифікатів → скопіювати в include/secrets.h
   partitions.csv             таблиця розділів з двома OTA-слотами
   merge_bin.py               після збірки складає merged.bin для Wokwi
@@ -128,28 +136,33 @@ docs/screenshots/            скріншоти для здачі
     { "Effect": "Allow", "Action": "iot:Publish",
       "Resource": [
         "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topic/iot-course/Ruslan_Chernyi/*",
-        "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topic/$aws/things/esp32-Ruslan_Chernyi/jobs/*"
+        "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topic/$aws/things/esp32-Ruslan_Chernyi/jobs/*",
+        "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topic/$aws/things/esp32-Ruslan_Chernyi/shadow/*"
       ] },
     { "Effect": "Allow", "Action": "iot:Subscribe",
       "Resource": [
         "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topicfilter/iot-course/Ruslan_Chernyi/*",
-        "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topicfilter/$aws/things/esp32-Ruslan_Chernyi/jobs/*"
+        "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topicfilter/$aws/things/esp32-Ruslan_Chernyi/jobs/*",
+        "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topicfilter/$aws/things/esp32-Ruslan_Chernyi/shadow/*"
       ] },
     { "Effect": "Allow", "Action": "iot:Receive",
       "Resource": [
         "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topic/iot-course/Ruslan_Chernyi/*",
-        "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topic/$aws/things/esp32-Ruslan_Chernyi/jobs/*"
+        "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topic/$aws/things/esp32-Ruslan_Chernyi/jobs/*",
+        "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topic/$aws/things/esp32-Ruslan_Chernyi/shadow/*"
       ] }
   ]
 }
 ```
 
 `Subscribe` + `Receive` покривають і `commands/led`, тож для команд окремих змін у політиці не треба.
-Усі чотири топіки Jobs — одна гілка `jobs/`, тому для OTA додано по одному ресурсу в Publish, Subscribe і Receive.
+Усі топіки Jobs — одна гілка `jobs/`, усі топіки Shadow — гілка `shadow/`, тому для кожної додано по одному ресурсу
+в Publish, Subscribe і Receive. Без `shadow/*` AWS розриває з'єднання на першому ж `shadow/get` (`state=-3`), і пристрій
+нескінченно перепідключається.
 `*` у політиці — вайлдкард IAM, а не MQTT-шний `#`.
 
 5. Device data endpoint: **IoT Core → Settings** (вигляд `xxxx-ats.iot.eu-central-1.amazonaws.com`).
-   Він потрібен і прошивці (`DOMAIN_ADDRESS` у `firmware/src/main.cpp`), і бекенду (`IOT_ENDPOINT` у `.env`).
+   Він потрібен і прошивці (`DOMAIN_ADDRESS` у `firmware/include/config.h`), і бекенду (`IOT_ENDPOINT` у `.env`).
 
 ### 2. DynamoDB і правила
 
@@ -212,7 +225,7 @@ Error action спрацьовує, коли правило **спрацювал�
 ### 3. IAM-користувач для бекенду
 
 **IAM → Users → Create user** → `iot-course-backend` → **Security credentials → Create access key**
-(ключі підуть у `backend/.env`). Inline policy — лише читання своїх таблиць і публікація лише у свої команди:
+(ключі підуть у `backend/.env`). Inline policy — лише читання своїх таблиць, публікація лише у свої команди і Shadow лише свого Thing:
 
 ```json
 {
@@ -224,12 +237,15 @@ Error action спрацьовує, коли правило **спрацювал�
         "arn:aws:dynamodb:eu-central-1:<ACCOUNT_ID>:table/iot_events"
       ] },
     { "Effect": "Allow", "Action": "iot:Publish",
-      "Resource": "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topic/iot-course/Ruslan_Chernyi/commands/*" }
+      "Resource": "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topic/iot-course/Ruslan_Chernyi/commands/*" },
+    { "Effect": "Allow", "Action": ["iot:GetThingShadow", "iot:UpdateThingShadow"],
+      "Resource": "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:thing/esp32-Ruslan_Chernyi" }
   ]
 }
 ```
 
-Без `iot:Publish` ендпоінт `POST /actuators/led` поверне `502 ForbiddenException`.
+Без `iot:Publish` ендпоінт `POST /actuators/led` поверне `502 ForbiddenException`,
+без `iot:GetThingShadow` / `iot:UpdateThingShadow` — те саме для `/shadow`.
 
 ### 4. Прошивка ESP32
 
@@ -300,19 +316,27 @@ uvicorn main:app --reload           # http://127.0.0.1:8000, Swagger — /docs
 |---|---|
 | `GET /health` | `{"status":"ok"}` |
 | `GET /sensors/latest` | останній запис пристрою з DynamoDB (404, якщо даних немає) |
-| `GET /sensors/history?minutes=30` | записи за останні N хвилин (`minutes` 1–1440) |
-| `GET /events?limit=20` | останні N подій з `iot_events`, найновіші згори (`limit` 1–100) |
+| `GET /sensors/history?hours=6` | записи за останні N годин, найстаріші згори (`hours` 1–24, за замовчуванням 6) |
+| `GET /events?limit=10&event=manual_trigger` | останні N подій з `iot_events`, найновіші згори (`limit` 1–100, за замовчуванням 10); `event` — лише події цього типу |
 | `POST /actuators/led` | тіло `{"action":"set_led","value":"on"\|"off"}` → публікація в `commands/led`; інші значення → 422 |
+| `GET /shadow` | `desired`, `reported`, `delta` і `version` документа Shadow (404, якщо Shadow ще не створений) |
+| `PUT /shadow/desired` | тіло `{"led":"on"\|"off","interval_sec":10–3600}` (хоча б одне поле) → `desired`; пристрій отримає `delta` |
 
 Перевірка через curl:
 
 ```bash
 curl localhost:8000/sensors/latest
-curl "localhost:8000/sensors/history?minutes=30"
-curl "localhost:8000/events?limit=5"
+curl "localhost:8000/sensors/history?hours=6"
+curl "localhost:8000/events?limit=10&event=manual_trigger"
 curl -X POST localhost:8000/actuators/led \
      -H 'Content-Type: application/json' -d '{"action":"set_led","value":"on"}'
+curl localhost:8000/shadow
+curl -X PUT localhost:8000/shadow/desired \
+     -H 'Content-Type: application/json' -d '{"led":"on","interval_sec":30}'
 ```
+
+`/events` з фільтром гортає сторінки DynamoDB сам: `Limit` у DynamoDB рахує записи **до** фільтра,
+тож `Limit=10` + `event=manual_trigger` могло б повернути порожній список, хоча натискання є.
 
 `200 {"status":"sent"}` означає, що брокер прийняв команду. Що LED справді змінився —
 підтверджує подія `led_changed` у топіку `events` (видно в **IoT Core → MQTT test client**).
@@ -378,7 +402,7 @@ Grafana запущена локально на `http://localhost:3000` (дашб
                          └──────── SUCCEEDED ◄────────┘
 ```
 
-Що робить прошивка ([firmware/src/main.cpp](firmware/src/main.cpp)):
+Що робить прошивка ([firmware/src/ota.cpp](firmware/src/ota.cpp)):
 
 | Момент | Дія |
 |---|---|
@@ -396,7 +420,7 @@ Grafana запущена локально на `http://localhost:3000` (дашб
 
 #### Відтворення
 
-1. **Зібрати 1.1.0.** У `firmware/src/main.cpp`: `FIRMWARE_VERSION "1.1.0"`, `BOOT_BLINKS 3` → `pio run`.
+1. **Зібрати 1.1.0.** У `firmware/include/config.h`: `FIRMWARE_VERSION "1.1.0"`, `BOOT_BLINKS 3` → `pio run`.
    Скопіювати `firmware/.pio/build/esp32dev/firmware.bin` як `firmware_1_1_0.bin` (саме `firmware.bin`, **не** `merged.bin`).
 2. **Повернути 1.0.0.** `FIRMWARE_VERSION "1.0.0"`, `BOOT_BLINKS 1` → `pio run`. Ця версія запускається в Wokwi.
 3. **S3:** створити приватний бакет у `eu-central-1` (Block all public access — увімкнено).

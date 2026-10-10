@@ -1,7 +1,7 @@
 import os
 import time
 import boto3
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Attr, Key
 
 # ═══════════════ Підключення до DynamoDB ═══════════════
 # Регіон задаємо явно — щоб не залежати від налаштувань aws config
@@ -26,10 +26,10 @@ def get_latest():
     return items[0] if items else None
 
 
-def get_history(minutes):
-    """Записи пристрою за останні N хвилин."""
-    now_ms = int(time.time() * 1000)            # зараз — у мілісекундах
-    cutoff_ms = now_ms - minutes * 60 * 1000    # межа: N хвилин тому
+def get_history(hours):
+    """Записи пристрою за останні N годин, найстаріші згори (так їх малює графік)."""
+    now_ms = int(time.time() * 1000)              # зараз — у мілісекундах
+    cutoff_ms = now_ms - hours * 60 * 60 * 1000   # межа: N годин тому
 
     response = table.query(
         KeyConditionExpression=Key("device_id").eq(DEVICE_ID)
@@ -38,11 +38,24 @@ def get_history(minutes):
     return response["Items"]
 
 
-def get_events(limit):
-    """Останні N подій пристрою (led_changed, dht_read_failed) — найновіші згори."""
-    response = events_table.query(
-        KeyConditionExpression=Key("device_id").eq(DEVICE_ID),
-        ScanIndexForward=False,
-        Limit=limit,
-    )
-    return response["Items"]
+def get_events(limit, event=None):
+    """Останні N подій пристрою — найновіші згори. event="manual_trigger" — лише натискання кнопки."""
+    params = {
+        "KeyConditionExpression": Key("device_id").eq(DEVICE_ID),
+        "ScanIndexForward": False,
+    }
+    if event is None:
+        params["Limit"] = limit
+        return events_table.query(**params)["Items"]
+
+    # Limit у DynamoDB рахує записи ДО фільтра: Limit=10 + фільтр може повернути 0 подій,
+    # хоча натискання є. Тому фільтруємо і гортаємо сторінки, поки не наберемо limit
+    params["FilterExpression"] = Attr("event").eq(event)
+    items = []
+    while len(items) < limit:
+        response = events_table.query(**params)
+        items.extend(response["Items"])
+        if "LastEvaluatedKey" not in response:
+            break
+        params["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+    return items[:limit]

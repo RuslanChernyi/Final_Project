@@ -22,3 +22,22 @@ def publish_led_command(command: dict):
         qos=1,                           # брокер підтвердить отримання
         payload=json.dumps(command),     # {"action": "set_led", "value": "on"}
     )
+
+
+# ═══════════════ Device Shadow ═══════════════
+# Ім'я Thing збігається з device_id: esp32-Ruslan_Chernyi
+THING_NAME = os.getenv("DEVICE_ID")
+
+def get_shadow():
+    """Повний документ Shadow: state.desired / state.reported / state.delta."""
+    response = iot.get_thing_shadow(thingName=THING_NAME)
+    return json.loads(response["payload"].read())   # payload — потік байтів, а не dict
+
+
+def update_desired(desired: dict):
+    """Записує desired. Якщо він відрізняється від reported — AWS надішле пристрою delta."""
+    response = iot.update_thing_shadow(
+        thingName=THING_NAME,
+        payload=json.dumps({"state": {"desired": desired}}),
+    )
+    return json.loads(response["payload"].read())
