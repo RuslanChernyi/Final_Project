@@ -533,3 +533,5 @@ LED тримає стан і під час сну (`gpio_hold_en`).
 
 <img width="1826" height="865" alt="Screenshot From 2026-10-09 16-48-11" src="https://github.com/user-attachments/assets/ec0fcb9a-d3a0-4f84-876a-eadbefca9d45" />
 
+## Photos
+/home/kimo/Pictures/Screenshots/Screenshot From 2026-10-10 20-04-43.png

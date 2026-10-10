@@ -6,17 +6,20 @@
     { "Effect": "Allow", "Action": "iot:Publish",
       "Resource": [
         "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topic/iot-course/Ruslan_Chernyi/*",
-        "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topic/$aws/things/esp32-Ruslan_Chernyi/jobs/*"
+        "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topic/$aws/things/esp32-Ruslan_Chernyi/jobs/*",
+        "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topic/$aws/things/esp32-Ruslan_Chernyi/shadow/*"
       ] },
     { "Effect": "Allow", "Action": "iot:Subscribe",
       "Resource": [
         "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topicfilter/iot-course/Ruslan_Chernyi/*",
-        "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topicfilter/$aws/things/esp32-Ruslan_Chernyi/jobs/*"
+        "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topicfilter/$aws/things/esp32-Ruslan_Chernyi/jobs/*",
+        "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topicfilter/$aws/things/esp32-Ruslan_Chernyi/shadow/*"
       ] },
     { "Effect": "Allow", "Action": "iot:Receive",
       "Resource": [
         "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topic/iot-course/Ruslan_Chernyi/*",
-        "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topic/$aws/things/esp32-Ruslan_Chernyi/jobs/*"
+        "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topic/$aws/things/esp32-Ruslan_Chernyi/jobs/*",
+        "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topic/$aws/things/esp32-Ruslan_Chernyi/shadow/*"
       ] }
   ]
 }

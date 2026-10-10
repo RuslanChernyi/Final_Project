@@ -43,7 +43,7 @@
 - [ ] `OverheatAlert`: `WHERE temperature > 28` → `WHERE temperature > 28 OR temperature < 15`
       (можна перейменувати на `TemperatureAlarm`). Оновити `aws/rules/OverheatAlert.json`.
 - [ ] Звірити JSON-и в `aws/` з тим, що реально налаштовано в консолі (вони записані з README домашки).
-- [ ] Політика Thing: додати топіки Shadow і Jobs (крок 5–6) — лише для свого Thing:
+- [x] Політика Thing: додати топіки Shadow і Jobs (крок 5–6) — лише для свого Thing:
       `$aws/things/esp32-Ruslan_Chernyi/shadow/*` (`jobs/*` уже додано в кроці 6)
       (`topic/` для Publish і Receive, `topicfilter/` для Subscribe).
 - [ ] Скріншот CloudWatch з алармом (температура в Wokwi > 28 і < 15) → `docs/screenshots/`.
@@ -78,7 +78,7 @@
 `commands/led` теж оновлює reported — пріоритет у Shadow (delta повертає LED до desired).
 
 Лишилось:
-- [ ] Policy пристрою: `$aws/things/esp32-Ruslan_Chernyi/shadow/*` — `topic/` для Publish і Receive, `topicfilter/` для Subscribe
+- [x] Policy пристрою: `$aws/things/esp32-Ruslan_Chernyi/shadow/*` — `topic/` для Publish і Receive, `topicfilter/` для Subscribe
       (без цього AWS розірве з'єднання на першому ж `shadow/get`, state=-3);
 - [ ] перевірка в консолі: **Things → esp32-Ruslan_Chernyi → Device Shadows → Classic** → змінити `desired`;
 - [ ] бекенд: `GET /shadow`, `PUT /shadow/desired` + IAM `iot:GetThingShadow`, `iot:UpdateThingShadow` (крок 3);
@@ -93,7 +93,7 @@
 `setBufferSize(4096)`, документи `aws/thing-policy.json` (jobs/*), `aws/job-ota-1.1.0.json`, `aws/iam/ota-presign-role-*.json`.
 
 Лишилось зробити руками в AWS (покроково — README, розділ 8):
-- [ ] оновити Policy пристрою в консолі до `aws/thing-policy.json`;
+- [x] оновити Policy пристрою в консолі до `aws/thing-policy.json`;
 - [ ] зібрати 1.1.0 (`FIRMWARE_VERSION "1.1.0"`, `BOOT_BLINKS 3`), покласти `firmware_1_1_0.bin` у приватний S3-бакет, повернути 1.0.0;
 - [ ] завантажити `job-ota-1.1.0.json` (з назвою свого бакета) у S3, створити роль `iot_ota_presign_role`;
 - [ ] створити job `ota-1-1-0`, пройти цикл у Wokwi, перевірити `SUCCEEDED` і `firmware_version: 1.1.0` у DynamoDB;
