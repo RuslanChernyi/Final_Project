@@ -64,8 +64,10 @@
 #define HTTP_TIMEOUT 15000
 
 // Timer intervals
-#define PUBLISH_INTERVAL 30000   // за замовчуванням, поки Shadow не сказав інакше
-#define RECONNECT_INTERVAL 5000
+#define PUBLISH_INTERVAL 60000   // за замовчуванням, поки Shadow не сказав інакше
+// експоненційний retry Wi-Fi/MQTT: 1 → 2 → 4 → 8 → 16 → 30 с (максимум)
+#define RECONNECT_BASE_DELAY 1000
+#define RECONNECT_MAX_DELAY  30000
 #define DEBOUNCE_DELAY 30
 #define NTP_TIMEOUT 10000
 
@@ -75,6 +77,8 @@
 //  Pin defines
 #define SWITCH_PIN 5
 #define SENSOR_DHT_PIN 4
+#define LIGHT_SENSOR_PIN 34   // ADC1 (працює разом з Wi-Fi), лише вхід
+#define ADC_MAX 4095          // 12-бітний АЦП
 #define DHTT_TYPE DHT22
 #define LED_PIN 2
 
@@ -120,7 +124,10 @@ void checkButton(uint8_t buttonPin);
 bool isWifiConnected(void);
 s_dhtData get_dhtData(void);
 void publishReading(void);
-void publishSensorData(float temperature, float humidity);
+void publishSensorData(float temperature, float humidity, uint16_t light);
+uint16_t readLightLevel(void);
+uint32_t reconnectDelay(uint32_t attempts);
+void publishManualTrigger(void);
 void publishSensorError(void);
 void onMessage(char *topic, byte *payload, unsigned int length);
 void publishLedEvent(bool ledOn);
@@ -146,10 +153,12 @@ void setup() {
   Serial.println(FIRMWARE_VERSION);
   pinMode(SWITCH_PIN,INPUT_PULLUP);
   pinMode(LED_PIN, OUTPUT);
+  pinMode(LIGHT_SENSOR_PIN, INPUT);
+  analogReadResolution(12);   // 0..4095
   bootBlink();
   dht.begin();
   if (!connectWifi()) {
-    // no blocking retry here - loop() keeps reconnecting every RECONNECT_INTERVAL
+    // no blocking retry here - loop() keeps reconnecting with growing delays
     Serial.println("[WiFi] Не вдалося підключитись - повторимо в loop()");
   }
   configureTLS();
@@ -180,8 +189,8 @@ void loop() {
       Serial.print("[MQTT] З'єднання розірвано, state=");
       Serial.println(mqttClient.state());
     }
-    // reconnect without delay(), forever - one attempt per RECONNECT_INTERVAL
-    if ((now - lastReconectionAttempt) > RECONNECT_INTERVAL) {
+    // reconnect without delay(), forever: кожна невдала спроба подвоює паузу до наступної
+    if ((now - lastReconectionAttempt) > reconnectDelay(reconectionAttempts)) {
       lastReconectionAttempt = now;
       reconectionAttempts++;
       if (!isWifiConnected()) {
@@ -193,13 +202,18 @@ void loop() {
         Serial.println(")...");
         connectMqtt();
       }
+      if (!mqttClient.connected()) {
+        Serial.print("[Retry] Наступна спроба через ");
+        Serial.print(reconnectDelay(reconectionAttempts) / 1000);
+        Serial.println(" с");
+      }
     }
     return;
   }
 
   wasConnected = true;
   mqttClient.loop();
-  reconectionAttempts = 0;
+  reconectionAttempts = 0;   // підключились — наступний збій знову почне з 1 с
 
   // Shadow: одна лише підписка на delta не покаже, що змінилось, поки ми були офлайн
   // (delta приходить лише в момент зміни). Тому після кожного підключення — явний get
@@ -237,9 +251,11 @@ void loop() {
   static uint8_t manual_published = 0;
 
   if (g_buttonState == BUTTON_LOGIC_HIGH) {
-    // one extra reading per button press, without waiting for the timer
+    // one extra reading per button press, without waiting for the timer,
+    // і подія manual_trigger в events (для таблиці натискань у Grafana)
     if (manual_published == 0) {
       publishReading();
+      publishManualTrigger();
       manual_published++;
     }
   } else {
@@ -358,7 +374,7 @@ void onMessage(char *topic, byte *payload, unsigned int length){
     return;
   }
 
-  // expected: {"action":"set","value":"on"} or {"action":"set","value":"off"}
+  // expected: {"action":"set_led","value":"on"} or {"action":"set_led","value":"off"}
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, message, length);
   if (err) {
@@ -370,7 +386,7 @@ void onMessage(char *topic, byte *payload, unsigned int length){
   const char *action = doc["action"] | "";  // "" if the field is missing
   const char *value  = doc["value"]  | "";
 
-  if (strcmp(action, "set") != 0) {
+  if (strcmp(action, "set_led") != 0) {
     Serial.print("[LED] Невідома дія: ");
     Serial.println(action);
     return;
@@ -426,10 +442,10 @@ void publishReading(void) {
     publishSensorError();
     return;
   }
-  publishSensorData(dht_data.temperature, dht_data.humidity);
+  publishSensorData(dht_data.temperature, dht_data.humidity, readLightLevel());
 }
 
-void publishSensorData(float temperature, float humidity) {
+void publishSensorData(float temperature, float humidity, uint16_t light) {
     if (!mqttClient.connected()) {
         Serial.println("[MQTT] Не підключено — пропускаємо");
         return;
@@ -438,13 +454,15 @@ void publishSensorData(float temperature, float humidity) {
     time_t now = currentTimestamp();
 
     // snprintf обріже рядок, якщо буфер замалий — JSON стане битим,
-    // і правило його не розбере. 256 байт вистачає з запасом
+    // і правило його не розбере. 320 байт вистачає з запасом
     // firmware_version — у хмарі видно, хто на якій версії; після OTA це доказ, що оновлення відбулось
-    char payload[256];
+    char payload[320];
     snprintf(payload, sizeof(payload),
         "{\"device_id\":\"%s\",\"timestamp\":%lu,"
-        "\"temperature\":%.1f,\"humidity\":%.1f,\"firmware_version\":\"%s\"}",
-        DEVICE_PAYLOAD_ID, (unsigned long)now, temperature, humidity, FIRMWARE_VERSION);
+        "\"temperature\":%.1f,\"humidity\":%.1f,\"light_level\":%u,"
+        "\"firmware_version\":\"%s\",\"uptime_sec\":%lu,\"free_heap\":%lu}",
+        DEVICE_PAYLOAD_ID, (unsigned long)now, temperature, humidity, light,
+        FIRMWARE_VERSION, (unsigned long)(millis() / 1000), (unsigned long)ESP.getFreeHeap());
 
     Serial.print("[MQTT] Публікуємо: ");
     Serial.println(payload);
@@ -470,6 +488,40 @@ void publishSensorError(void) {
 
   bool publish_status = mqttClient.publish(TOPIC_EVENTS, payload);
   Serial.println(publish_status ? "[MQTT] OK" : "[MQTT] Помилка публікації");
+}
+
+void publishManualTrigger(void) {
+  if (!mqttClient.connected()) {
+    Serial.println("[MQTT] не підключено - пропускаємо");
+    return;
+  }
+
+  char payload[160];
+  snprintf(payload, sizeof(payload),
+      "{\"device_id\":\"%s\",\"timestamp\":%lu,"
+      "\"event\":\"manual_trigger\",\"firmware_version\":\"%s\"}",
+      DEVICE_PAYLOAD_ID, (unsigned long)currentTimestamp(), FIRMWARE_VERSION);
+
+  Serial.print("[MQTT] Подія: ");
+  Serial.println(payload);
+
+  bool ok = mqttClient.publish(TOPIC_EVENTS, payload);
+  Serial.println(ok ? "[MQTT] OK" : "[MQTT] Помилка публікації");
+}
+
+// Модуль фоторезистора в Wokwi: що світліше, то нижча напруга на AO.
+// Перевертаємо, щоб light_level ріс разом з освітленістю: 0 = темно, 4095 = дуже світло
+uint16_t readLightLevel(void) {
+  return ADC_MAX - analogRead(LIGHT_SENSOR_PIN);
+}
+
+// attempts = скільки спроб підряд уже не вдалося: 0 → 1 с, 1 → 2 с, 2 → 4 с ... максимум 30 с
+uint32_t reconnectDelay(uint32_t attempts) {
+  if (attempts > 5) {
+    attempts = 5;   // 1000 << 5 = 32 с — далі зсувати немає сенсу, все одно обріжемо до 30
+  }
+  uint32_t delayMs = RECONNECT_BASE_DELAY << attempts;
+  return (delayMs > RECONNECT_MAX_DELAY) ? RECONNECT_MAX_DELAY : delayMs;
 }
 
 bool isWifiConnected() { return WiFi.status() == WL_CONNECTED; }

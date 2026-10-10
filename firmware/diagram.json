@@ -3,36 +3,161 @@
   "author": "Ruslan Black",
   "editor": "wokwi",
   "parts": [
-    { "type": "board-esp32-devkit-v1", "id": "esp", "top": 0, "left": 0, "attrs": {} },
+    {
+      "type": "board-esp32-devkit-v1",
+      "id": "esp",
+      "top": 0,
+      "left": 0,
+      "attrs": {}
+    },
     {
       "type": "wokwi-pushbutton",
       "id": "btn1",
       "top": -106.2,
       "left": -73.8,
-      "attrs": { "color": "green" }
+      "attrs": {
+        "color": "green"
+      }
     },
-    { "type": "wokwi-dht22", "id": "dht1", "top": -100, "left": 280, "attrs": {} },
-    { "type": "wokwi-led", "id": "led1", "top": 130.8, "left": 119, "attrs": { "color": "red" } },
+    {
+      "type": "wokwi-dht22",
+      "id": "dht1",
+      "top": -100,
+      "left": 280,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-led",
+      "id": "led1",
+      "top": 130.8,
+      "left": 119,
+      "attrs": {
+        "color": "red"
+      }
+    },
     {
       "type": "wokwi-resistor",
       "id": "r1",
       "top": 158.4,
       "left": 133.85,
       "rotate": 90,
-      "attrs": { "value": "220" }
+      "attrs": {
+        "value": "220"
+      }
+    },
+    {
+      "type": "wokwi-photoresistor-sensor",
+      "id": "ldr1",
+      "top": -150,
+      "left": 120,
+      "attrs": {}
     }
   ],
   "connections": [
-    [ "esp:TX0", "$serialMonitor:RX", "", [] ],
-    [ "esp:RX0", "$serialMonitor:TX", "", [] ],
-    [ "btn1:1.r", "esp:D5", "magenta", [ "h150.8", "v182.32" ] ],
-    [ "btn1:2.l", "esp:GND.2", "black", [ "h-12.6", "v220.92" ] ],
-    [ "dht1:VCC", "esp:3V3", "red", [ "h-83.8", "v138.7", "h-109.91" ] ],
-    [ "dht1:GND", "esp:GND.1", "black", [ "h41", "v196.3", "h-263.51" ] ],
-    [ "dht1:SDA", "esp:D4", "yellow", [ "v100.3", "h-203.21" ] ],
-    [ "esp:D2", "r1:1", "green", [ "h0" ] ],
-    [ "r1:2", "led1:A", "green", [ "h-19.2", "v-10.8" ] ],
-    [ "led1:C", "esp:GND.1", "green", [ "v0", "h-18.8", "v-19.2" ] ]
+    [
+      "esp:TX0",
+      "$serialMonitor:RX",
+      "",
+      []
+    ],
+    [
+      "esp:RX0",
+      "$serialMonitor:TX",
+      "",
+      []
+    ],
+    [
+      "btn1:1.r",
+      "esp:D5",
+      "magenta",
+      [
+        "h150.8",
+        "v182.32"
+      ]
+    ],
+    [
+      "btn1:2.l",
+      "esp:GND.2",
+      "black",
+      [
+        "h-12.6",
+        "v220.92"
+      ]
+    ],
+    [
+      "dht1:VCC",
+      "esp:3V3",
+      "red",
+      [
+        "h-83.8",
+        "v138.7",
+        "h-109.91"
+      ]
+    ],
+    [
+      "dht1:GND",
+      "esp:GND.1",
+      "black",
+      [
+        "h41",
+        "v196.3",
+        "h-263.51"
+      ]
+    ],
+    [
+      "dht1:SDA",
+      "esp:D4",
+      "yellow",
+      [
+        "v100.3",
+        "h-203.21"
+      ]
+    ],
+    [
+      "esp:D2",
+      "r1:1",
+      "green",
+      [
+        "h0"
+      ]
+    ],
+    [
+      "r1:2",
+      "led1:A",
+      "green",
+      [
+        "h-19.2",
+        "v-10.8"
+      ]
+    ],
+    [
+      "led1:C",
+      "esp:GND.1",
+      "green",
+      [
+        "v0",
+        "h-18.8",
+        "v-19.2"
+      ]
+    ],
+    [
+      "ldr1:VCC",
+      "esp:3V3",
+      "red",
+      []
+    ],
+    [
+      "ldr1:GND",
+      "esp:GND.1",
+      "black",
+      []
+    ],
+    [
+      "ldr1:AO",
+      "esp:D34",
+      "orange",
+      []
+    ]
   ],
   "dependencies": {}
 }

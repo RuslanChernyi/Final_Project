@@ -90,7 +90,7 @@
         const response = await fetch(`${API_URL}/actuators/led`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "set", value: value }),
+          body: JSON.stringify({ action: "set_led", value: value }),
         });
         const data = await response.json();
 

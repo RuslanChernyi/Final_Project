@@ -14,9 +14,9 @@ HTML-сторінка → FastAPI → AWS IoT → ESP32 вмикає/вимик�
                        │  DHT22 → D4, кнопка → D5,        │
                        │  LED → D2 (через 220 Ω)          │
                        └───┬──────────────────────────▲───┘
-      ① телеметрія, 30 с   │                          │  ④ команда
+      ① телеметрія, 60 с   │                          │  ④ команда
    .../telemetry           │  MQTT/TLS :8883          │  .../commands/led
-   ⑤ підтвердження         │                          │  {"action":"set","value":"on"}
+   ⑤ підтвердження         │                          │  {"action":"set_led","value":"on"}
    .../events              │                          │
    {"event":"led_changed"} ▼                          │
 ┌──────────────────────────────────────────────────────┴───────────────────┐
@@ -82,9 +82,9 @@ docs/screenshots/            скріншоти для здачі
 |---|---|
 | Регіон | `eu-central-1` (усі ресурси в одному регіоні) |
 | Thing / Client ID / `device_id` | `esp32-Ruslan_Chernyi` |
-| Телеметрія (пристрій → хмара) | `iot-course/Ruslan_Chernyi/telemetry` — `{"device_id","timestamp","temperature","humidity","firmware_version"}` |
-| Команди (хмара → пристрій) | `iot-course/Ruslan_Chernyi/commands/led` — `{"action":"set","value":"on"\|"off"}` |
-| Події (пристрій → хмара) | `iot-course/Ruslan_Chernyi/events` — `{"event":"led_changed","value":"on"}` або `{"error":"dht_read_failed"}` |
+| Телеметрія (пристрій → хмара) | `iot-course/Ruslan_Chernyi/telemetry` — `{"device_id","timestamp","temperature","humidity","light_level","firmware_version","uptime_sec","free_heap"}` |
+| Команди (хмара → пристрій) | `iot-course/Ruslan_Chernyi/commands/led` — `{"action":"set_led","value":"on"\|"off"}` |
+| Події (пристрій → хмара) | `iot-course/Ruslan_Chernyi/events` — `{"event":"led_changed","value":"on"}`, `{"event":"manual_trigger"}` або `{"error":"dht_read_failed"}` |
 | Таблиці DynamoDB | `iot_telemetry` і `iot_events` (обидві: `device_id` String + `received_at` Number, мс) |
 | OTA (AWS IoT Jobs) | `$aws/things/esp32-Ruslan_Chernyi/jobs/...` — `notify-next`, `$next/get`, `$next/get/accepted`, `<jobId>/update` |
 
@@ -251,18 +251,19 @@ Wokwi запускає `.pio/build/esp32dev/merged.bin` (bootloader + табли
 Що робить прошивка:
 
 - при старті блимає LED `BOOT_BLINKS` разів (видима різниця між версіями прошивки);
-- раз на 30 с (і одразу після підключення) читає DHT22 і публікує в `telemetry` разом з `firmware_version`;
-- кнопка D5 — позачергова публікація;
-- підписана на `commands/led` (QoS 1): парсить JSON, на `{"action":"set","value":"on"|"off"}` вмикає/вимикає LED на D2
+- раз на 60 с (або `interval_sec` із Shadow; і одразу після підключення) читає DHT22 і фоторезистор (D34) і публікує в `telemetry`
+  `temperature`, `humidity`, `light_level` (0 = темно, 4095 = світло), `firmware_version`, `uptime_sec`, `free_heap`;
+- кнопка D5 (debounce 30 мс) — позачергова телеметрія і подія `{"event":"manual_trigger"}` у `events`;
+- підписана на `commands/led` (QoS 1): парсить JSON, на `{"action":"set_led","value":"on"|"off"}` вмикає/вимикає LED на D2
   і **після** цього публікує `{"device_id","timestamp","event":"led_changed","value"}` у `events`;
   невалідний JSON або невідомі `action`/`value` ігноруються з повідомленням у Serial;
 - слухає AWS IoT Jobs і оновлює себе по OTA — див. розділ 8.
 
 | Збій | Поведінка |
 |---|---|
-| Wi-Fi не підключився | не блокує старт; `loop()` викликає `WiFi.reconnect()` раз на 5 с |
+| Wi-Fi не підключився | не блокує старт; `loop()` викликає `WiFi.reconnect()` з паузами 1 → 2 → 4 → 8 → 16 → 30 с |
 | NTP не пройшов за 10 с | старт продовжується, `timestamp` = `0`; SNTP досинхронізується у фоні |
-| MQTT відвалився | reconnect раз на 5 с без `delay()`, після reconnect — повторна підписка на команди |
+| MQTT відвалився | reconnect без `delay()` з паузами 1 → 2 → 4 → 8 → 16 → 30 с (максимум), після успіху пауза знову 1 с; після reconnect — повторні підписки |
 | DHT22 повернув NaN | телеметрія не публікується, натомість `{"error":"dht_read_failed"}` у `events` |
 
 ### 5. Бекенд (FastAPI)
@@ -301,7 +302,7 @@ uvicorn main:app --reload           # http://127.0.0.1:8000, Swagger — /docs
 | `GET /sensors/latest` | останній запис пристрою з DynamoDB (404, якщо даних немає) |
 | `GET /sensors/history?minutes=30` | записи за останні N хвилин (`minutes` 1–1440) |
 | `GET /events?limit=20` | останні N подій з `iot_events`, найновіші згори (`limit` 1–100) |
-| `POST /actuators/led` | тіло `{"action":"set","value":"on"\|"off"}` → публікація в `commands/led`; інші значення → 422 |
+| `POST /actuators/led` | тіло `{"action":"set_led","value":"on"\|"off"}` → публікація в `commands/led`; інші значення → 422 |
 
 Перевірка через curl:
 
@@ -310,7 +311,7 @@ curl localhost:8000/sensors/latest
 curl "localhost:8000/sensors/history?minutes=30"
 curl "localhost:8000/events?limit=5"
 curl -X POST localhost:8000/actuators/led \
-     -H 'Content-Type: application/json' -d '{"action":"set","value":"on"}'
+     -H 'Content-Type: application/json' -d '{"action":"set_led","value":"on"}'
 ```
 
 `200 {"status":"sent"}` означає, що брокер прийняв команду. Що LED справді змінився —

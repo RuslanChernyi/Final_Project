@@ -20,5 +20,5 @@ def publish_led_command(command: dict):
     iot.publish(
         topic=COMMAND_TOPIC,             # iot-course/Ruslan_Chernyi/commands/led
         qos=1,                           # брокер підтвердить отримання
-        payload=json.dumps(command),     # {"action": "set", "value": "on"}
+        payload=json.dumps(command),     # {"action": "set_led", "value": "on"}
     )

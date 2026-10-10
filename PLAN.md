@@ -21,19 +21,19 @@
 | Сертифікати й `.env` у `.gitignore`, `.env.example` | ✅ |
 | Запінена платформа `espressif32@6.13.0` | ✅ (зроблено при перенесенні) |
 
-## Крок 1. Прошивка: формат телеметрії і поведінка (14 балів)
+## Крок 1. Прошивка: формат телеметрії і поведінка (14 балів) — готово
 
 Файли: `firmware/src/main.cpp`, `firmware/diagram.json`.
 
-- [ ] Додати фоторезистор `wokwi-photoresistor-sensor` у `diagram.json` (AO → D34, ADC1) і читати `analogRead()` → `light_level`.
-- [ ] Розширити payload телеметрії до формату з вимог: `light_level`, `firmware_version` (`"1.0.0"`),
+- [x] Додати фоторезистор `wokwi-photoresistor-sensor` у `diagram.json` (AO → D34, ADC1) і читати `analogRead()` → `light_level`.
+- [x] Розширити payload телеметрії до формату з вимог: `light_level`, `firmware_version` (`"1.0.0"`),
       `uptime_sec` (`millis()/1000`), `free_heap` (`ESP.getFreeHeap()`). (`firmware_version` уже додано в кроці 6.)
-- [ ] Інтервал публікації `PUBLISH_INTERVAL` 30 с → 60 с.
-- [ ] Кнопка: крім позачергової телеметрії, публікувати в `events`
+- [x] Інтервал публікації `PUBLISH_INTERVAL` 30 с → 60 с.
+- [x] Кнопка: крім позачергової телеметрії, публікувати в `events`
       `{"device_id","timestamp","event":"manual_trigger","firmware_version"}`.
-- [ ] Експоненційний retry замість фіксованих 5 с: 1 → 2 → 4 → 8 → 16 → 30 с (максимум), скидати до 1 с після успіху.
+- [x] Експоненційний retry замість фіксованих 5 с: 1 → 2 → 4 → 8 → 16 → 30 с (максимум), скидати до 1 с після успіху.
       Логіка вже є в `loop()` через `RECONNECT_INTERVAL` — достатньо рахувати затримку з `reconectionAttempts`.
-- [ ] Команда LED: `"action":"set"` → `"action":"set_led"` (так у вимогах; синхронно з кроком 3).
+- [x] Команда LED: `"action":"set"` → `"action":"set_led"` (бекенд `LedCommand` і `web/index.html` оновлені теж).
 
 Перевірка: Serial показує новий JSON раз на 60 с, у DynamoDB з'являються нові поля, натискання кнопки
 дає запис `manual_trigger` в `iot_events`.
@@ -54,7 +54,7 @@
 
 - [ ] `/sensors/history?minutes=N` → `?hours=N` (1–24), за замовчуванням 6.
 - [ ] `/events?limit=N` — за замовчуванням 10 (для таблиці в Grafana); за бажанням фільтр лише `manual_trigger`.
-- [ ] `LedCommand.action`: `Literal["set"]` → `Literal["set_led"]`; оновити `web/index.html`.
+- [x] `LedCommand.action`: `Literal["set"]` → `Literal["set_led"]`; оновити `web/index.html`.
 - [ ] Два нові ендпоінти для Shadow (уточнити у викладача, які саме очікуються; найлогічніше):
   - `GET /shadow` — `iot-data.get_thing_shadow()` → `reported` / `desired` / `delta`;
   - `PUT /shadow/desired` — `iot-data.update_thing_shadow()` з `{"led":"on","interval_sec":60}`.

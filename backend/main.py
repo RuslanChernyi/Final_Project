@@ -26,7 +26,7 @@ app.add_middleware(
 # ═══════════════ Схема тіла запиту ═══════════════
 # Literal — FastAPI сам відхилить усе, крім цих значень (422 Unprocessable Entity)
 class LedCommand(BaseModel):
-    action: Literal["set"]
+    action: Literal["set_led"]
     value: Literal["on", "off"]
 
 
