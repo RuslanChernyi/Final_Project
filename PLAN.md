@@ -70,15 +70,19 @@
 - [ ] Table: останні 10 подій `manual_trigger` (`/events?limit=10`).
 - [ ] Експортувати JSON у `grafana/dashboard.json`, скріншот → `docs/screenshots/`.
 
-## Крок 5. Device Shadow (8 балів)
+## Крок 5. Device Shadow (8 балів) — прошивка готова
 
-Конфігурація живе в хмарі: `desired.led` (`on`/`off`) і `desired.interval_sec`.
+Зроблено в `firmware/src/main.cpp`: підписки на `shadow/get/accepted`, `shadow/get/rejected`, `shadow/update/delta`;
+явний `shadow/get` після кожного підключення; `desired.led` (`on`/`off`) і `desired.interval_sec` (10–3600, поза межами — ігнор);
+`reported` = `led`, `interval_sec`, `firmware_version`; 404 на get → створюємо Shadow своїм reported;
+`commands/led` теж оновлює reported — пріоритет у Shadow (delta повертає LED до desired).
 
-- [ ] Підписатися в `connectMqtt()` на `.../shadow/get/accepted` і `.../shadow/update/delta`.
-- [ ] Після підключення — явний `publish(".../shadow/get", "")` (одна лише delta не покаже стан, змінений, поки пристрій був офлайн).
-- [ ] Застосувати `led` і `interval_sec`, потім опублікувати `reported` у `.../shadow/update`.
-- [ ] Команда з `commands/led` теж оновлює `reported`. Пріоритет — у Shadow: якщо `desired.led` відрізняється,
-      прийде delta і поверне LED у бажаний стан. Описати це в README як відоме обмеження.
+Лишилось:
+- [ ] Policy пристрою: `$aws/things/esp32-Ruslan_Chernyi/shadow/*` — `topic/` для Publish і Receive, `topicfilter/` для Subscribe
+      (без цього AWS розірве з'єднання на першому ж `shadow/get`, state=-3);
+- [ ] перевірка в консолі: **Things → esp32-Ruslan_Chernyi → Device Shadows → Classic** → змінити `desired`;
+- [ ] бекенд: `GET /shadow`, `PUT /shadow/desired` + IAM `iot:GetThingShadow`, `iot:UpdateThingShadow` (крок 3);
+- [ ] README: розділ про Shadow і обмеження «Shadow має пріоритет над commands/led».
 
 ## Крок 6. OTA через AWS IoT Jobs, 1.0.0 → 1.1.0 (12 балів) — код готовий
 

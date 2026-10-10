@@ -46,13 +46,25 @@
 #define TOPIC_JOBS_GET          "$aws/things/" THING_NAME "/jobs/$next/get"       // -> просимо документ
 #define TOPIC_JOBS_GET_ACCEPTED "$aws/things/" THING_NAME "/jobs/$next/get/accepted" // <- приходить документ
 
+// Device Shadow — теж зарезервовані топіки $aws. Конфігурація пристрою живе в хмарі:
+// desired = що хоче користувач, reported = що пристрій реально зробив, delta = різниця між ними
+#define TOPIC_SHADOW_GET          "$aws/things/" THING_NAME "/shadow/get"           // -> просимо поточний документ
+#define TOPIC_SHADOW_GET_ACCEPTED "$aws/things/" THING_NAME "/shadow/get/accepted"  // <- документ
+#define TOPIC_SHADOW_GET_REJECTED "$aws/things/" THING_NAME "/shadow/get/rejected"  // <- 404: shadow ще не існує
+#define TOPIC_SHADOW_UPDATE       "$aws/things/" THING_NAME "/shadow/update"        // -> звітуємо reported
+#define TOPIC_SHADOW_DELTA        "$aws/things/" THING_NAME "/shadow/update/delta"  // <- desired змінився
+
+// межі для interval_sec із Shadow: значення поза ними ігноруємо
+#define MIN_INTERVAL_SEC 10
+#define MAX_INTERVAL_SEC 3600
+
 // документ роботи з presigned URL — це не 200 байтів; з буфером 256 він мовчки обріжеться
 #define MQTT_BUFFER_SIZE 4096
 #define OTA_MIN_SIZE 100000   // менше — це точно не прошивка
 #define HTTP_TIMEOUT 15000
 
 // Timer intervals
-#define PUBLISH_INTERVAL 30000
+#define PUBLISH_INTERVAL 30000   // за замовчуванням, поки Shadow не сказав інакше
 #define RECONNECT_INTERVAL 5000
 #define DEBOUNCE_DELAY 30
 #define NTP_TIMEOUT 10000
@@ -88,6 +100,11 @@ char jobBuf[MQTT_BUFFER_SIZE];
 bool appConfirmed = false;       // нова прошивка вже підтвердила себе (rollback скасовано)
 bool jobsRequested = false;      // після підключення вже спитали jobs/$next/get
 
+// Shadow: поточна конфігурація пристрою
+bool ledOn = false;
+uint32_t publishInterval = PUBLISH_INTERVAL;   // мс, змінюється через desired.interval_sec
+bool shadowRequested = false;    // після підключення вже спитали shadow/get
+
 /***    Global objects      ***/
 WiFiClientSecure wifiClient;
 PubSubClient mqttClient(wifiClient);
@@ -113,6 +130,10 @@ void reportJobStatus(const char *jobId, const char *status);
 bool downloadAndFlash(const char *url);
 bool writeFirmware(Stream &stream, size_t length);
 void rebootDevice(void);
+void setLed(bool on);
+void handleShadow(const char *topic, byte *payload, unsigned int length);
+bool applyShadowState(JsonObjectConst state);
+void reportShadow(void);
 
 // Arduino за замовчуванням підтверджує новий образ ще ДО setup() — тоді rollback
 // захищає лише від падіння на старті. true = підтвердимо самі, після успішного MQTT
@@ -180,6 +201,13 @@ void loop() {
   mqttClient.loop();
   reconectionAttempts = 0;
 
+  // Shadow: одна лише підписка на delta не покаже, що змінилось, поки ми були офлайн
+  // (delta приходить лише в момент зміни). Тому після кожного підключення — явний get
+  if (!shadowRequested) {
+    shadowRequested = true;
+    mqttClient.publish(TOPIC_SHADOW_GET, "{}");
+  }
+
   // роботу могли створити, поки ми були офлайн — ніхто нам про неї не скаже, питаємо самі.
   // Після OTA цей самий запит поверне нашу роботу ще раз — і ми звітуємо SUCCEEDED
   if (!jobsRequested) {
@@ -197,8 +225,8 @@ void loop() {
     return;
   }
 
-  // first reading right after connecting, then every PUBLISH_INTERVAL
-  if (!firstPublishDone || (now - lastPublish) > PUBLISH_INTERVAL) {
+  // first reading right after connecting, then every publishInterval (from Shadow)
+  if (!firstPublishDone || (now - lastPublish) > publishInterval) {
     firstPublishDone = true;
     lastPublish = now;
     publishReading();
@@ -261,6 +289,12 @@ bool connectMqtt() {
     mqttClient.subscribe(TOPIC_JOBS_GET_ACCEPTED);
     Serial.println("[MQTT] Підписатись на: jobs/notify-next, jobs/$next/get/accepted");
 
+    // Shadow: відповідь на наш get і зміни desired
+    mqttClient.subscribe(TOPIC_SHADOW_GET_ACCEPTED);
+    mqttClient.subscribe(TOPIC_SHADOW_GET_REJECTED);
+    mqttClient.subscribe(TOPIC_SHADOW_DELTA);
+    Serial.println("[MQTT] Підписатись на: shadow/get/accepted, shadow/get/rejected, shadow/update/delta");
+
     // Нова прошивка довела, що працює: Wi-Fi, TLS і MQTT піднялись.
     // Тільки тепер скасовуємо rollback. Без цього перший же reset поверне стару версію
     if (!appConfirmed) {
@@ -270,6 +304,7 @@ bool connectMqtt() {
     }
 
     jobsRequested = false;   // після кожного підключення — запитати роботи (див. loop())
+    shadowRequested = false; // і документ Shadow
     return true;
   }
 
@@ -297,6 +332,14 @@ void onMessage(char *topic, byte *payload, unsigned int length){
     memcpy(jobBuf, payload, length);
     jobBuf[length] = '\0';
     jobPending = true;
+    return;
+  }
+
+  // Shadow — до копіювання на стек: документ може бути на кілька КБ
+  if (strcmp(topic, TOPIC_SHADOW_GET_ACCEPTED) == 0 ||
+      strcmp(topic, TOPIC_SHADOW_GET_REJECTED) == 0 ||
+      strcmp(topic, TOPIC_SHADOW_DELTA) == 0) {
+    handleShadow(topic, payload, length);
     return;
   }
 
@@ -333,22 +376,32 @@ void onMessage(char *topic, byte *payload, unsigned int length){
     return;
   }
 
-  bool ledOn;
+  bool turnOn;
   if (strcmp(value, "on") == 0) {
-    ledOn = true;
+    turnOn = true;
   } else if (strcmp(value, "off") == 0) {
-    ledOn = false;
+    turnOn = false;
   } else {
     Serial.print("[LED] Невідоме значення: ");
     Serial.println(value);
     return;
   }
 
-  digitalWrite(LED_PIN, ledOn ? HIGH : LOW);
-  Serial.println(ledOn ? "[LED] Увімкнено" : "[LED] Вимкнено");
+  setLed(turnOn);
+
+  // Команда міняє лише reported. Якщо в Shadow є desired.led з іншим значенням,
+  // AWS одразу надішле delta, і LED повернеться до desired — Shadow має пріоритет
+  reportShadow();
+}
+
+// Єдине місце, де змінюється LED: і для commands/led, і для Shadow
+void setLed(bool on) {
+  ledOn = on;
+  digitalWrite(LED_PIN, on ? HIGH : LOW);
+  Serial.println(on ? "[LED] Увімкнено" : "[LED] Вимкнено");
 
   // confirm only after the command was actually executed
-  publishLedEvent(ledOn);
+  publishLedEvent(on);
 }
 
 void publishLedEvent(bool ledOn) {
@@ -660,4 +713,95 @@ void rebootDevice(void) {
   // Рестарт через deep sleep на 100 мс працює і в Wokwi, і на справжній платі
   esp_sleep_enable_timer_wakeup(100 * 1000);
   esp_deep_sleep_start();
+}
+
+/***    Device Shadow    ***/
+
+void handleShadow(const char *topic, byte *payload, unsigned int length) {
+  // get/rejected з кодом 404 — Shadow ще не існує (перший запуск). Створюємо його своїм reported
+  if (strcmp(topic, TOPIC_SHADOW_GET_REJECTED) == 0) {
+    Serial.println("[Shadow] Документа ще немає - створюємо з reported");
+    reportShadow();
+    return;
+  }
+
+  // ArduinoJson копіює рядки в doc, тож payload далі не потрібен —
+  // і publish() у reportShadow() може спокійно перезаписати буфер PubSubClient
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, (const char *)payload, length);
+  if (err) {
+    Serial.print("[Shadow] Невалідний JSON: ");
+    Serial.println(err.c_str());
+    return;
+  }
+
+  if (strcmp(topic, TOPIC_SHADOW_GET_ACCEPTED) == 0) {
+    // повний документ: {"state":{"desired":{...},"reported":{...},"delta":{...}}, ...}
+    Serial.println("[Shadow] Отримали документ");
+    applyShadowState(doc["state"]["desired"]);
+    reportShadow();   // після старту звітуємо завжди: хмара має знати, що пристрій живий і на якій версії
+    return;
+  }
+
+  // delta: {"state":{"led":"on"}, ...} — лише поля, де desired != reported
+  Serial.println("[Shadow] Отримали delta");
+  if (applyShadowState(doc["state"])) {
+    reportShadow();
+  }
+}
+
+// Застосовує {"led":"on","interval_sec":60}. Повертає true, якщо щось змінилось
+bool applyShadowState(JsonObjectConst state) {
+  if (state.isNull()) {
+    return false;   // desired порожній — лишаємо як є
+  }
+  bool changed = false;
+
+  if (state["led"].is<const char *>()) {
+    const char *led = state["led"];
+    if (strcmp(led, "on") == 0 || strcmp(led, "off") == 0) {
+      bool on = (strcmp(led, "on") == 0);
+      if (on != ledOn) {
+        setLed(on);
+      }
+      changed = true;   // навіть без зміни LED — reported треба вирівняти з desired
+    } else {
+      Serial.print("[Shadow] Невідоме значення led: ");
+      Serial.println(led);
+    }
+  }
+
+  if (state["interval_sec"].is<uint32_t>()) {
+    uint32_t sec = state["interval_sec"];
+    // поза межами — ігноруємо, а не обрізаємо: обрізане значення ніколи не збіглося б
+    // з desired, і delta приходила б знову і знову
+    if (sec >= MIN_INTERVAL_SEC && sec <= MAX_INTERVAL_SEC) {
+      publishInterval = sec * 1000;
+      changed = true;
+      Serial.print("[Shadow] Інтервал публікації: ");
+      Serial.print(sec);
+      Serial.println(" с");
+    } else {
+      Serial.print("[Shadow] interval_sec поза межами ");
+      Serial.print(MIN_INTERVAL_SEC);
+      Serial.print("-");
+      Serial.print(MAX_INTERVAL_SEC);
+      Serial.println(" - ігноруємо");
+    }
+  }
+  return changed;
+}
+
+// Звітуємо, що пристрій реально робить зараз
+void reportShadow(void) {
+  char payload[160];
+  snprintf(payload, sizeof(payload),
+      "{\"state\":{\"reported\":{\"led\":\"%s\",\"interval_sec\":%lu,\"firmware_version\":\"%s\"}}}",
+      ledOn ? "on" : "off", (unsigned long)(publishInterval / 1000), FIRMWARE_VERSION);
+
+  Serial.print("[Shadow] reported: ");
+  Serial.println(payload);
+
+  bool ok = mqttClient.publish(TOPIC_SHADOW_UPDATE, payload);
+  Serial.println(ok ? "[MQTT] OK" : "[MQTT] Помилка публікації");
 }
