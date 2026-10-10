@@ -3,3 +3,7 @@ version = 1
 # merged.bin (а не firmware.bin) — щоб у симуляторі була таблиця розділів з двома OTA-слотами
 firmware = '.pio/build/esp32dev/merged.bin'
 elf = '.pio/build/esp32dev/firmware.elf'
+
+# Режим Deep Sleep (pio run -e esp32dev_deepsleep): закоментувати два рядки вище і розкоментувати ці
+# firmware = '.pio/build/esp32dev_deepsleep/merged.bin'
+# elf = '.pio/build/esp32dev_deepsleep/firmware.elf'

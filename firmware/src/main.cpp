@@ -7,6 +7,7 @@
 #include <HTTPClient.h>
 #include <Update.h>
 #include <esp_ota_ops.h>
+#include <driver/rtc_io.h>
 #include "secrets.h"
 
 /***    Defines   ***/
@@ -17,6 +18,13 @@
 // Видима зміна між версіями: скільки разів LED блимає при старті.
 // 1.0.0 -> 1 раз, 1.1.0 -> 3 рази
 #define BOOT_BLINKS 1
+
+// Deep Sleep — додатковий режим. Вмикається окремою збіркою (platformio.ini, env:esp32dev_deepsleep):
+//   0 — пристрій завжди онлайн (базовий проєкт, стаціонарне живлення)
+//   1 — прокинувся → підключився → OTA? → телеметрія → Shadow → заснув на interval_sec
+#ifndef ENABLE_DEEP_SLEEP
+#define ENABLE_DEEP_SLEEP 0
+#endif
 
 #define BUTTON_LOGIC_HIGH 0
 #define BUTTON_LOGIC_LOW 1
@@ -63,6 +71,10 @@
 #define OTA_MIN_SIZE 100000   // менше — це точно не прошивка
 #define HTTP_TIMEOUT 15000
 
+// Deep Sleep: скільки максимум слухаємо відповідь (jobs/$next/get, shadow/get) після запиту
+#define MQTT_WAIT_TIMEOUT 2000
+#define WAKE_MQTT_ATTEMPTS 3   // спроб підключитись за одне пробудження — далі спимо, щоб не з'їсти батарею
+
 // Timer intervals
 #define PUBLISH_INTERVAL 60000   // за замовчуванням, поки Shadow не сказав інакше
 // експоненційний retry Wi-Fi/MQTT: 1 → 2 → 4 → 8 → 16 → 30 с (максимум)
@@ -75,7 +87,7 @@
 #define NTP_VALID_EPOCH 1700000000
 
 //  Pin defines
-#define SWITCH_PIN 5
+#define SWITCH_PIN 27   // RTC GPIO — тільки такі можуть будити з Deep Sleep (GPIO5 — не може)
 #define SENSOR_DHT_PIN 4
 #define LIGHT_SENSOR_PIN 34   // ADC1 (працює разом з Wi-Fi), лише вхід
 #define ADC_MAX 4095          // 12-бітний АЦП
@@ -105,9 +117,20 @@ bool appConfirmed = false;       // нова прошивка вже підтв�
 bool jobsRequested = false;      // після підключення вже спитали jobs/$next/get
 
 // Shadow: поточна конфігурація пристрою
-bool ledOn = false;
-uint32_t publishInterval = PUBLISH_INTERVAL;   // мс, змінюється через desired.interval_sec
 bool shadowRequested = false;    // після підключення вже спитали shadow/get
+bool shadowReceived = false;     // Deep Sleep: відповідь на shadow/get уже прийшла
+
+// ═══ ЩО ПЕРЕЖИВАЄ СОН: RTC_DATA_ATTR ═══
+// Deep Sleep вимикає основну RAM — звичайні змінні після пробудження знову мають початкові значення.
+// RTC-пам'ять (8 КБ) живе між пробудженнями, але не переживає втрату живлення і RESET.
+// Ініціалізація тут спрацьовує лише при подачі живлення, не після сну
+RTC_DATA_ATTR bool ledOn = false;
+RTC_DATA_ATTR uint32_t publishInterval = PUBLISH_INTERVAL;   // мс, змінюється через desired.interval_sec
+RTC_DATA_ATTR uint32_t bootCount = 0;
+RTC_DATA_ATTR uint32_t uptimeBeforeSleepSec = 0;   // скільки пристрій «жив» до цього пробудження (з урахуванням сну)
+// Після OTA нова прошивка прокидається з RTC-пам'яттю старої — і читає її за іншими адресами.
+// Версія в RTC не збіглась = це перший старт цієї прошивки, RTC-змінні треба скинути
+RTC_DATA_ATTR char rtcFirmwareVersion[16] = "";
 
 /***    Global objects      ***/
 WiFiClientSecure wifiClient;
@@ -128,6 +151,12 @@ void publishSensorData(float temperature, float humidity, uint16_t light);
 uint16_t readLightLevel(void);
 uint32_t reconnectDelay(uint32_t attempts);
 void publishManualTrigger(void);
+uint32_t uptimeSec(void);
+bool initRtcState(void);
+void mqttWait(uint32_t timeoutMs, volatile bool *doneFlag);
+bool connectForWakeCycle(void);
+void runWakeCycle(bool wokeByButton);
+void goToSleep(void);
 void publishSensorError(void);
 void onMessage(char *topic, byte *payload, unsigned int length);
 void publishLedEvent(bool ledOn);
@@ -149,13 +178,29 @@ extern "C" bool verifyRollbackLater() { return true; }
 
 void setup() {
   Serial.begin(115200);
+  bool freshBoot = initRtcState();
+  bootCount++;
   Serial.print("Старт, прошивка ");
-  Serial.println(FIRMWARE_VERSION);
+  Serial.print(FIRMWARE_VERSION);
+  Serial.print(", пробудження №");
+  Serial.println(bootCount);
+
+#if ENABLE_DEEP_SLEEP
+  // пін кнопки після сну ще в RTC-режимі (див. goToSleep) — повертаємо звичайний GPIO
+  rtc_gpio_deinit((gpio_num_t)SWITCH_PIN);
+  // LED тримався під час сну через gpio_hold — відпускаємо, далі керуємо самі
+  gpio_hold_dis((gpio_num_t)LED_PIN);
+  gpio_deep_sleep_hold_dis();
+#endif
+
   pinMode(SWITCH_PIN,INPUT_PULLUP);
   pinMode(LED_PIN, OUTPUT);
   pinMode(LIGHT_SENSOR_PIN, INPUT);
   analogReadResolution(12);   // 0..4095
-  bootBlink();
+  if (freshBoot) {
+    bootBlink();              // блимаємо лише при першому старті прошивки, а не щохвилини після сну
+  }
+  digitalWrite(LED_PIN, ledOn ? HIGH : LOW);   // стан LED пережив сон у RTC
   dht.begin();
   if (!connectWifi()) {
     // no blocking retry here - loop() keeps reconnecting with growing delays
@@ -169,11 +214,23 @@ void setup() {
   }
   mqttClient.setServer(DOMAIN_ADDRESS, MQTT_PORT);
   mqttClient.setBufferSize(MQTT_BUFFER_SIZE);   // до connect()
+
+#if ENABLE_DEEP_SLEEP
+  // setup() стає всією програмою: один прохід — і спати
+  runWakeCycle(esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0);
+#else
   if (isWifiConnected()) {
     connectMqtt();
   }
+#endif
 }
 
+#if ENABLE_DEEP_SLEEP
+void loop() {
+  // порожньо — вся робота вмістилась в один прохід setup().
+  // Сюди потрапляємо, лише якщо setup() не заснув (otaInProgress) — і просто чекаємо
+}
+#else
 void loop() {
   // ═══ ПІД ЧАС ОНОВЛЕННЯ НІЧОГО ІНШОГО НЕ РОБИМО ═══
   if (otaInProgress) return;
@@ -262,6 +319,7 @@ void loop() {
     manual_published = 0;
   }
 }
+#endif
 
 bool connectWifi() {
   Serial.println("Connecting to Wifi");
@@ -462,7 +520,7 @@ void publishSensorData(float temperature, float humidity, uint16_t light) {
         "\"temperature\":%.1f,\"humidity\":%.1f,\"light_level\":%u,"
         "\"firmware_version\":\"%s\",\"uptime_sec\":%lu,\"free_heap\":%lu}",
         DEVICE_PAYLOAD_ID, (unsigned long)now, temperature, humidity, light,
-        FIRMWARE_VERSION, (unsigned long)(millis() / 1000), (unsigned long)ESP.getFreeHeap());
+        FIRMWARE_VERSION, (unsigned long)uptimeSec(), (unsigned long)ESP.getFreeHeap());
 
     Serial.print("[MQTT] Публікуємо: ");
     Serial.println(payload);
@@ -772,6 +830,7 @@ void rebootDevice(void) {
 void handleShadow(const char *topic, byte *payload, unsigned int length) {
   // get/rejected з кодом 404 — Shadow ще не існує (перший запуск). Створюємо його своїм reported
   if (strcmp(topic, TOPIC_SHADOW_GET_REJECTED) == 0) {
+    shadowReceived = true;
     Serial.println("[Shadow] Документа ще немає - створюємо з reported");
     reportShadow();
     return;
@@ -789,6 +848,7 @@ void handleShadow(const char *topic, byte *payload, unsigned int length) {
 
   if (strcmp(topic, TOPIC_SHADOW_GET_ACCEPTED) == 0) {
     // повний документ: {"state":{"desired":{...},"reported":{...},"delta":{...}}, ...}
+    shadowReceived = true;
     Serial.println("[Shadow] Отримали документ");
     applyShadowState(doc["state"]["desired"]);
     reportShadow();   // після старту звітуємо завжди: хмара має знати, що пристрій живий і на якій версії
@@ -856,4 +916,128 @@ void reportShadow(void) {
 
   bool ok = mqttClient.publish(TOPIC_SHADOW_UPDATE, payload);
   Serial.println(ok ? "[MQTT] OK" : "[MQTT] Помилка публікації");
+}
+
+/***    Deep Sleep    ***/
+
+// millis() після кожного пробудження починає з нуля — додаємо час, прожитий до сну (разом зі сном)
+uint32_t uptimeSec(void) {
+  return uptimeBeforeSleepSec + millis() / 1000;
+}
+
+// Повертає true, якщо це перший старт цієї прошивки (живлення, RESET або щойно після OTA)
+bool initRtcState(void) {
+  if (strcmp(rtcFirmwareVersion, FIRMWARE_VERSION) == 0) {
+    return false;   // прокинулись після сну тієї самої прошивки — RTC-змінні справжні
+  }
+  ledOn = false;
+  publishInterval = PUBLISH_INTERVAL;
+  bootCount = 0;
+  uptimeBeforeSleepSec = 0;
+  strlcpy(rtcFirmwareVersion, FIRMWARE_VERSION, sizeof(rtcFirmwareVersion));
+  return true;
+}
+
+// ═══ PUBLISH НЕ СЛУХАЄ ═══
+// Вхідні повідомлення приходять тільки поки крутиться mqttClient.loop() — не «коли минув час»
+// і не «коли ми щось опублікували». delay() тут не допоможе: колбек мовчатиме.
+// Виходимо раніше, якщо відповідь уже прийшла (*doneFlag) — кожна зайва секунда радіо = батарея
+void mqttWait(uint32_t timeoutMs, volatile bool *doneFlag) {
+  uint32_t start = millis();
+  while (millis() - start < timeoutMs) {
+    mqttClient.loop();
+    if (doneFlag != nullptr && *doneFlag) {
+      return;
+    }
+    delay(10);
+  }
+}
+
+// Те саме зростання пауз, що й у loop(), але з обмеженням: не вийшло за кілька спроб — спимо далі
+bool connectForWakeCycle(void) {
+  for (uint32_t attempt = 0; attempt < WAKE_MQTT_ATTEMPTS; attempt++) {
+    if (!isWifiConnected()) {
+      connectWifi();
+    }
+    if (isWifiConnected() && connectMqtt()) {
+      return true;
+    }
+    uint32_t pause = reconnectDelay(attempt);
+    Serial.print("[Retry] Наступна спроба через ");
+    Serial.print(pause / 1000);
+    Serial.println(" с");
+    delay(pause);   // тут можна: setup() — єдина програма, слухати поки нічого
+  }
+  return false;
+}
+
+// Чекліст пробудження (Заняття 16)
+void runWakeCycle(bool wokeByButton) {
+  if (wokeByButton) {
+    Serial.println("[Sleep] Розбудила кнопка");
+  }
+
+  // 1-2. мережа + NTP (уже в setup) і MQTT + підписки
+  if (!connectForWakeCycle()) {
+    Serial.println("[Sleep] Не вдалося підключитись - спимо до наступного разу");
+    goToSleep();
+  }
+
+  // 3. чи є оновлення? Синхронно: OTA робимо прямо тут, ДО сну
+  jobPending = false;
+  mqttClient.publish(TOPIC_JOBS_GET, "{}");
+  mqttWait(MQTT_WAIT_TIMEOUT, &jobPending);
+  if (jobPending) {
+    jobPending = false;
+    otaInProgress = true;
+    processJob();             // успіх → перезавантаження всередині, сюди не повернемось
+    otaInProgress = false;    // невдача → повернулись і працюємо далі
+  }
+
+  // 4. віддали вимір (і подію, якщо розбудила кнопка)
+  publishReading();
+  if (wokeByButton) {
+    publishManualTrigger();
+  }
+
+  // 5. який стан має бути? delta/документ прийшов → виконали; тиша → усе вже правильно
+  shadowReceived = false;
+  mqttClient.publish(TOPIC_SHADOW_GET, "{}");
+  mqttWait(MQTT_WAIT_TIMEOUT, &shadowReceived);
+  mqttWait(200, nullptr);     // дати reported/телеметрії піти в мережу до відключення
+
+  // 6. запобіжник: не спимо, поки йде запис прошивки
+  if (otaInProgress) {
+    return;
+  }
+  goToSleep();
+}
+
+void goToSleep(void) {
+  uint32_t sleepSec = publishInterval / 1000;   // interval_sec із Shadow пережив сон у RTC
+  uptimeBeforeSleepSec += millis() / 1000 + sleepSec;
+
+  // акуратно закриваємо MQTT і TLS — брокер одразу знає, що нас немає
+  mqttClient.disconnect();
+  wifiClient.stop();
+  WiFi.disconnect(true);
+
+  // таймер: прокинутись через interval_sec
+  esp_sleep_enable_timer_wakeup((uint64_t)sleepSec * 1000000ULL);
+
+  // кнопка: будить одразу (ext0, рівень 0 = натиснута). Внутрішня підтяжка має жити і під час сну
+  rtc_gpio_pullup_en((gpio_num_t)SWITCH_PIN);
+  rtc_gpio_pulldown_dis((gpio_num_t)SWITCH_PIN);
+  esp_sleep_enable_ext0_wakeup((gpio_num_t)SWITCH_PIN, 0);
+
+  // LED тримає свій стан (з Shadow / commands) і під час сну
+  digitalWrite(LED_PIN, ledOn ? HIGH : LOW);
+  gpio_hold_en((gpio_num_t)LED_PIN);
+  gpio_deep_sleep_hold_en();
+
+  Serial.print("[Sleep] Deep Sleep на ");
+  Serial.print(sleepSec);
+  Serial.println(" с");
+  Serial.flush();
+  esp_deep_sleep_start();     // керування сюди не повернеться
 }

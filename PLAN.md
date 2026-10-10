@@ -108,11 +108,16 @@
 - [ ] Перед першим `git push`: `git status` — переконатися, що `secrets.h`, `.env`, `*.pem` не потрапили в індекс.
 - [ ] Відео до 2 хв: змінити температуру в Wokwi → графік у Grafana → кнопка LED → LED у Wokwi.
 
-## Крок 8 (додатково). Deep Sleep (6 балів)
+## Крок 8 (додатково). Deep Sleep (6 балів) — прошивка готова
 
-Робити в останню чергу, окремим `[env]` у `platformio.ini`, щоб базова версія залишалась без сну:
-прокинувся → підключився → Shadow/Jobs → телеметрія → `esp_deep_sleep_start()` на `interval_sec`;
-кнопка як джерело пробудження (`ext0`); `uptime_sec` зберігати в `RTC_DATA_ATTR`.
+Окрема збірка `pio run -e esp32dev_deepsleep` (`ENABLE_DEEP_SLEEP=1`), базова лишається завжди онлайн.
+Чекліст пробудження із Заняття 16: Wi-Fi → MQTT → jobs (OTA до сну) → телеметрія → Shadow → `otaInProgress`? → сон на `interval_sec`.
+`RTC_DATA_ATTR`: LED, інтервал, `bootCount`, `uptime_sec`, версія прошивки (скидання після OTA). Кнопку перенесено D5 → D27 (RTC GPIO, ext0).
+
+Лишилось:
+- [ ] прогнати в Wokwi (переключити `wokwi.toml` на `esp32dev_deepsleep`): сон 60 с, пробудження кнопкою, `uptime_sec` росте;
+- [ ] змінити `desired.interval_sec` у Shadow → пристрій спить новий інтервал;
+- [ ] README: у розділі «Відомі обмеження» — «так, Deep Sleep зроблено як окремий режим».
 
 ## Підводні камені (слайд Заняття 19)
 
