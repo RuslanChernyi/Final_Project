@@ -27,14 +27,13 @@
 
 - [ ] Додати фоторезистор `wokwi-photoresistor-sensor` у `diagram.json` (AO → D34, ADC1) і читати `analogRead()` → `light_level`.
 - [ ] Розширити payload телеметрії до формату з вимог: `light_level`, `firmware_version` (`"1.0.0"`),
-      `uptime_sec` (`millis()/1000`), `free_heap` (`ESP.getFreeHeap()`). Буфер `payload[160]` → `payload[256]`.
+      `uptime_sec` (`millis()/1000`), `free_heap` (`ESP.getFreeHeap()`). (`firmware_version` уже додано в кроці 6.)
 - [ ] Інтервал публікації `PUBLISH_INTERVAL` 30 с → 60 с.
 - [ ] Кнопка: крім позачергової телеметрії, публікувати в `events`
       `{"device_id","timestamp","event":"manual_trigger","firmware_version"}`.
 - [ ] Експоненційний retry замість фіксованих 5 с: 1 → 2 → 4 → 8 → 16 → 30 с (максимум), скидати до 1 с після успіху.
       Логіка вже є в `loop()` через `RECONNECT_INTERVAL` — достатньо рахувати затримку з `reconectionAttempts`.
 - [ ] Команда LED: `"action":"set"` → `"action":"set_led"` (так у вимогах; синхронно з кроком 3).
-- [ ] `mqttClient.setBufferSize(3072)` — знадобиться для Shadow і Jobs (документи більші за 256 байт).
 
 Перевірка: Serial показує новий JSON раз на 60 с, у DynamoDB з'являються нові поля, натискання кнопки
 дає запис `manual_trigger` в `iot_events`.
@@ -45,7 +44,7 @@
       (можна перейменувати на `TemperatureAlarm`). Оновити `aws/rules/OverheatAlert.json`.
 - [ ] Звірити JSON-и в `aws/` з тим, що реально налаштовано в консолі (вони записані з README домашки).
 - [ ] Політика Thing: додати топіки Shadow і Jobs (крок 5–6) — лише для свого Thing:
-      `$aws/things/esp32-Ruslan_Chernyi/shadow/*` і `$aws/things/esp32-Ruslan_Chernyi/jobs/*`
+      `$aws/things/esp32-Ruslan_Chernyi/shadow/*` (`jobs/*` уже додано в кроці 6)
       (`topic/` для Publish і Receive, `topicfilter/` для Subscribe).
 - [ ] Скріншот CloudWatch з алармом (температура в Wokwi > 28 і < 15) → `docs/screenshots/`.
 
@@ -81,15 +80,20 @@
 - [ ] Команда з `commands/led` теж оновлює `reported`. Пріоритет — у Shadow: якщо `desired.led` відрізняється,
       прийде delta і поверне LED у бажаний стан. Описати це в README як відоме обмеження.
 
-## Крок 6. OTA через AWS IoT Jobs, 1.0.0 → 1.1.0 (12 балів)
+## Крок 6. OTA через AWS IoT Jobs, 1.0.0 → 1.1.0 (12 балів) — код готовий
 
-- [ ] S3-бакет з `firmware-1.1.0.bin`; документ job → `aws/job-ota-1.1.0.json`
-      (`{"operation":"ota_update","version":"1.1.0","url":"${aws:iot:s3-presigned-url:...}"}`).
-- [ ] Прошивка: підписка на `.../jobs/notify-next` і `.../jobs/$next/get/accepted`, на старті — `.../jobs/$next/get`.
-- [ ] Отримали job з новою версією → `IN_PROGRESS` → завантаження `esp_https_ota()` → reboot.
-- [ ] Після reboot: `esp_ota_mark_app_valid_cancel_rollback()`, потім job знову приходить — версія вже збігається → `SUCCEEDED`.
-- [ ] Видима зміна в 1.1.0 (наприклад, LED блимає 3 рази при старті) і `firmware_version` у телеметрії.
-- [ ] Задокументувати весь цикл у README зі скріншотом статусу job.
+Зроблено (за Заняттям 15): `partitions.csv` з двома слотами, `merged.bin` для Wokwi (автоматично, `merge_bin.py`),
+`FIRMWARE_VERSION` у телеметрії, `BOOT_BLINKS` як видима зміна, підписки на Jobs, `$next/get` після кожного підключення,
+колбек-диспетчер + `jobPending` у `loop()`, звіти `IN_PROGRESS` / `SUCCEEDED` / `FAILED`, відключення MQTT перед
+завантаженням, `Update.begin/writeStream/end`, `verifyRollbackLater()` + підтвердження після MQTT, рестарт через deep sleep 100 мс,
+`setBufferSize(4096)`, документи `aws/thing-policy.json` (jobs/*), `aws/job-ota-1.1.0.json`, `aws/iam/ota-presign-role-*.json`.
+
+Лишилось зробити руками в AWS (покроково — README, розділ 8):
+- [ ] оновити Policy пристрою в консолі до `aws/thing-policy.json`;
+- [ ] зібрати 1.1.0 (`FIRMWARE_VERSION "1.1.0"`, `BOOT_BLINKS 3`), покласти `firmware_1_1_0.bin` у приватний S3-бакет, повернути 1.0.0;
+- [ ] завантажити `job-ota-1.1.0.json` (з назвою свого бакета) у S3, створити роль `iot_ota_presign_role`;
+- [ ] створити job `ota-1-1-0`, пройти цикл у Wokwi, перевірити `SUCCEEDED` і `firmware_version: 1.1.0` у DynamoDB;
+- [ ] скріншоти: статус job, Serial-лог оновлення → `docs/screenshots/`.
 
 ## Крок 7. Безпека і документація (5 + 4 бали)
 
@@ -114,9 +118,9 @@
 | Команди не приходять після reconnect | підписки всередині `connectMqtt()` | ✅ |
 | У DynamoDB один запис | `received_at` з `timestamp()` | ✅ |
 | Shadow не бачить стан | явний `shadow/get` на старті | крок 5 |
-| Shadow відповідає, колбек мовчить | `setBufferSize(3072)` | крок 1 |
-| Колбек мовчить | `iot:Receive` у політиці | ✅ (додати Shadow/Jobs — крок 2) |
-| Після OTA стара версія | `esp_ota_mark_app_valid_cancel_rollback()` | крок 6 |
+| Shadow відповідає, колбек мовчить | `setBufferSize(3072)` | ✅ (4096, крок 6) |
+| Колбек мовчить | `iot:Receive` у політиці | ✅ (Jobs додано; Shadow — крок 5) |
+| Після OTA стара версія | `esp_ota_mark_app_valid_cancel_rollback()` | ✅ |
 | Grafana в 1970 році | `received_at` як UNIX ms | ✅ |
 
 ## Довідка

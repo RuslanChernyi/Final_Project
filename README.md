@@ -56,6 +56,8 @@ firmware/                    PlatformIO-проєкт ESP32
   platformio.ini             збірка, запінена платформа espressif32@6.13.0 і бібліотеки
   src/main.cpp               прошивка
   include/example.secrets.h  шаблон сертифікатів → скопіювати в include/secrets.h
+  partitions.csv             таблиця розділів з двома OTA-слотами
+  merge_bin.py               після збірки складає merged.bin для Wokwi
   diagram.json, wokwi.toml   схема і конфіг Wokwi
 backend/                     FastAPI
   main.py                    ендпоінти, CORS
@@ -67,6 +69,8 @@ aws/                         документи AWS
   thing-policy.json          політика Thing
   backend-iam-policy.json    inline policy IAM-користувача бекенду
   rules/*.json               три IoT Rules (StoreTelemetry, StoreEvents, OverheatAlert)
+  job-ota-1.1.0.json         документ OTA-роботи (AWS IoT Jobs)
+  iam/ota-presign-role-*.json  роль, якою AWS IoT підписує посилання на прошивку в S3
 grafana/dashboard.json       експорт дашборду (JSON Model)
 web/index.html               сторінка з кнопками керування LED
 docs/screenshots/            скріншоти для здачі
@@ -78,10 +82,11 @@ docs/screenshots/            скріншоти для здачі
 |---|---|
 | Регіон | `eu-central-1` (усі ресурси в одному регіоні) |
 | Thing / Client ID / `device_id` | `esp32-Ruslan_Chernyi` |
-| Телеметрія (пристрій → хмара) | `iot-course/Ruslan_Chernyi/telemetry` — `{"device_id","timestamp","temperature","humidity"}` |
+| Телеметрія (пристрій → хмара) | `iot-course/Ruslan_Chernyi/telemetry` — `{"device_id","timestamp","temperature","humidity","firmware_version"}` |
 | Команди (хмара → пристрій) | `iot-course/Ruslan_Chernyi/commands/led` — `{"action":"set","value":"on"\|"off"}` |
 | Події (пристрій → хмара) | `iot-course/Ruslan_Chernyi/events` — `{"event":"led_changed","value":"on"}` або `{"error":"dht_read_failed"}` |
 | Таблиці DynamoDB | `iot_telemetry` і `iot_events` (обидві: `device_id` String + `received_at` Number, мс) |
+| OTA (AWS IoT Jobs) | `$aws/things/esp32-Ruslan_Chernyi/jobs/...` — `notify-next`, `$next/get`, `$next/get/accepted`, `<jobId>/update` |
 
 ## Створені ресурси AWS
 
@@ -100,6 +105,9 @@ docs/screenshots/            скріншоти для здачі
 | IAM role | `iot_rule_cw_role` | дозволяє правилам писати в CloudWatch Logs |
 | CloudWatch log groups | `/aws/iot/rules/errors`, `/aws/iot/rules/overheat` | помилки правил і алерти перегріву |
 | IAM user | `iot-course-backend` | під ним працює FastAPI (ключі в `backend/.env`) |
+| S3 bucket | `<BUCKET>` (приватний) | `firmware_1_1_0.bin` і `job-ota-1.1.0.json` |
+| IAM role | `iot_ota_presign_role` | дозволяє AWS IoT робити `s3:GetObject` у бакеті — для presigned URL |
+| IoT Job | `ota-1-1-0` | оновлення 1.0.0 → 1.1.0 для `esp32-Ruslan_Chernyi` |
 
 ## Налаштування з нуля
 
@@ -108,7 +116,8 @@ docs/screenshots/            скріншоти для здачі
 1. Перевірити регіон **eu-central-1** у правому верхньому куті консолі.
 2. **AWS IoT Core → Manage → Things → Create thing** → `esp32-Ruslan_Chernyi`.
 3. **Auto-generate certificate** → завантажити `certificate.pem.crt`, `private.pem.key`, `AmazonRootCA1.pem`.
-4. Створити і прикріпити до сертифіката Policy (тільки власний Client ID і власні топіки):
+4. Створити і прикріпити до сертифіката Policy (тільки власний Client ID, власні топіки і власна гілка Jobs) —
+   [aws/thing-policy.json](aws/thing-policy.json), замінивши `<ACCOUNT_ID>`:
 
 ```json
 {
@@ -117,16 +126,27 @@ docs/screenshots/            скріншоти для здачі
     { "Effect": "Allow", "Action": "iot:Connect",
       "Resource": "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:client/esp32-Ruslan_Chernyi" },
     { "Effect": "Allow", "Action": "iot:Publish",
-      "Resource": "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topic/iot-course/Ruslan_Chernyi/*" },
+      "Resource": [
+        "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topic/iot-course/Ruslan_Chernyi/*",
+        "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topic/$aws/things/esp32-Ruslan_Chernyi/jobs/*"
+      ] },
     { "Effect": "Allow", "Action": "iot:Subscribe",
-      "Resource": "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topicfilter/iot-course/Ruslan_Chernyi/*" },
+      "Resource": [
+        "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topicfilter/iot-course/Ruslan_Chernyi/*",
+        "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topicfilter/$aws/things/esp32-Ruslan_Chernyi/jobs/*"
+      ] },
     { "Effect": "Allow", "Action": "iot:Receive",
-      "Resource": "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topic/iot-course/Ruslan_Chernyi/*" }
+      "Resource": [
+        "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topic/iot-course/Ruslan_Chernyi/*",
+        "arn:aws:iot:eu-central-1:<ACCOUNT_ID>:topic/$aws/things/esp32-Ruslan_Chernyi/jobs/*"
+      ] }
   ]
 }
 ```
 
 `Subscribe` + `Receive` покривають і `commands/led`, тож для команд окремих змін у політиці не треба.
+Усі чотири топіки Jobs — одна гілка `jobs/`, тому для OTA додано по одному ресурсу в Publish, Subscribe і Receive.
+`*` у політиці — вайлдкард IAM, а не MQTT-шний `#`.
 
 5. Device data endpoint: **IoT Core → Settings** (вигляд `xxxx-ats.iot.eu-central-1.amazonaws.com`).
    Він потрібен і прошивці (`DOMAIN_ADDRESS` у `firmware/src/main.cpp`), і бекенду (`IOT_ENDPOINT` у `.env`).
@@ -216,8 +236,12 @@ Error action спрацьовує, коли правило **спрацювал�
 ```bash
 cd firmware
 cp include/example.secrets.h include/secrets.h   # вставити вміст трьох .pem файлів
-pio run                                          # збірка
+pio run                                          # збірка → firmware.bin і merged.bin
 ```
+
+Wokwi запускає `.pio/build/esp32dev/merged.bin` (bootloader + таблиця розділів + прошивка), а не `firmware.bin`:
+інакше в симуляторі немає таблиці розділів на `0x8000`, і `Update.begin()` не знаходить OTA-слот.
+`merged.bin` складає `merge_bin.py` автоматично після кожного `pio run`.
 
 Симуляція: VS Code + розширення **Wokwi** → `F1 → Wokwi: Select Config File` → `firmware/wokwi.toml`, потім `F1 → Wokwi: Start Simulator`. Serial Monitor — `115200`.
 
@@ -226,11 +250,13 @@ pio run                                          # збірка
 
 Що робить прошивка:
 
-- раз на 30 с (і одразу після підключення) читає DHT22 і публікує в `telemetry`;
+- при старті блимає LED `BOOT_BLINKS` разів (видима різниця між версіями прошивки);
+- раз на 30 с (і одразу після підключення) читає DHT22 і публікує в `telemetry` разом з `firmware_version`;
 - кнопка D5 — позачергова публікація;
 - підписана на `commands/led` (QoS 1): парсить JSON, на `{"action":"set","value":"on"|"off"}` вмикає/вимикає LED на D2
   і **після** цього публікує `{"device_id","timestamp","event":"led_changed","value"}` у `events`;
-  невалідний JSON або невідомі `action`/`value` ігноруються з повідомленням у Serial.
+  невалідний JSON або невідомі `action`/`value` ігноруються з повідомленням у Serial;
+- слухає AWS IoT Jobs і оновлює себе по OTA — див. розділ 8.
 
 | Збій | Поведінка |
 |---|---|
@@ -326,6 +352,104 @@ Grafana запущена локально на `http://localhost:3000` (дашб
 дата виявиться в 1970-му або в далекому майбутньому.
 
 Дашборд: діапазон часу `Last 30 minutes`, автооновлення `30s`.
+
+### 8. OTA через AWS IoT Jobs (1.0.0 → 1.1.0)
+
+#### Як це влаштовано
+
+Флеш поділено на два однакові слоти `app0`/`app1` по 1.5 МБ ([firmware/partitions.csv](firmware/partitions.csv)).
+Нова прошивка пишеться у **вільний** слот, поки стара працює; перемикання (`otadata`) — лише після перевірки образу.
+Обірвався зв'язок посеред завантаження — зіпсований тільки вільний слот, пристрій живе далі на старій версії.
+
+```text
+ Ви: Create job ──► AWS IoT Jobs ── notify-next ──► ESP32 (1.0.0)
+                         ▲                            │ $next/get
+                         │                            ▼
+                         │   документ роботи з presigned URL (живе ≤ 3600 с)
+                         │                            │
+                         ├──────── IN_PROGRESS ◄──────┤
+                         │                            │ MQTT відключено
+                         │      S3 (приватний) ──HTTPS──► Update: запис у вільний слот → otadata → рестарт
+                         │                            │
+                         │                            ▼
+                         │                       ESP32 (1.1.0): MQTT OK → esp_ota_mark_app_valid_cancel_rollback()
+                         │                            │ $next/get → та сама робота, версія збігається
+                         └──────── SUCCEEDED ◄────────┘
+```
+
+Що робить прошивка ([firmware/src/main.cpp](firmware/src/main.cpp)):
+
+| Момент | Дія |
+|---|---|
+| кожне підключення до MQTT | підписка на `jobs/notify-next` і `jobs/$next/get/accepted`, потім публікація в `jobs/$next/get` — роботу могли створити, поки пристрій був офлайн |
+| прийшов `notify-next` | ще раз `$next/get` — документ зі свіжим presigned URL |
+| прийшов документ | колбек лише копіює його в `jobBuf`, саму роботу виконує `loop()` (завантаження — десятки секунд) |
+| `version` ≠ `FIRMWARE_VERSION` | `IN_PROGRESS` → `mqttClient.disconnect()` + `wifiClient.stop()` (два TLS-з'єднання одночасно — брак пам'яті) → HTTPS-завантаження → `Update.begin/writeStream/end` → рестарт |
+| `version` = `FIRMWARE_VERSION` | це вже нова прошивка після рестарту → `SUCCEEDED` |
+| завантаження/запис не вдались | підключення до MQTT назад → `FAILED`, пристрій працює далі на старій версії |
+| після рестарту | `verifyRollbackLater()` = `true`: Arduino не підтверджує образ сам, а `esp_ota_mark_app_valid_cancel_rollback()` викликається лише після успішного MQTT. Не підключилась нова версія — наступний reset відкотить на стару |
+
+Буфер PubSubClient піднято до 4096 байт: документ роботи з presigned URL — понад 1 КБ, з буфером 256 він мовчки обрізався б.
+Сертифікат S3 у `eu-central-1` підписаний тим самим **Amazon Root CA 1**, що й IoT Core, тож для HTTPS використовується `root_ca` із `secrets.h`.
+Рестарт після OTA — через deep sleep на 100 мс: у Wokwi після `ESP.restart()` нова прошивка може зависнути на старті.
+
+#### Відтворення
+
+1. **Зібрати 1.1.0.** У `firmware/src/main.cpp`: `FIRMWARE_VERSION "1.1.0"`, `BOOT_BLINKS 3` → `pio run`.
+   Скопіювати `firmware/.pio/build/esp32dev/firmware.bin` як `firmware_1_1_0.bin` (саме `firmware.bin`, **не** `merged.bin`).
+2. **Повернути 1.0.0.** `FIRMWARE_VERSION "1.0.0"`, `BOOT_BLINKS 1` → `pio run`. Ця версія запускається в Wokwi.
+3. **S3:** створити приватний бакет у `eu-central-1` (Block all public access — увімкнено).
+   Завантажити `firmware_1_1_0.bin` і [aws/job-ota-1.1.0.json](aws/job-ota-1.1.0.json), замінивши в ньому `<BUCKET>`:
+
+   ```json
+   {
+     "operation": "ota",
+     "version": "1.1.0",
+     "url": "${aws:iot:s3-presigned-url-v2:https://s3.eu-central-1.amazonaws.com/<BUCKET>/firmware_1_1_0.bin}"
+   }
+   ```
+
+   У `url` не посилання, а плейсхолдер: AWS сам підставляє підписане посилання, коли пристрій просить документ. `-v2`, не `-v1`.
+4. **IAM-роль для presigning** `iot_ota_presign_role`: trust — [aws/iam/ota-presign-role-trust.json](aws/iam/ota-presign-role-trust.json)
+   (`iot.amazonaws.com`), permissions — [aws/iam/ota-presign-role-permissions.json](aws/iam/ota-presign-role-permissions.json)
+   (`s3:GetObject` на `arn:aws:s3:::<BUCKET>/*`).
+5. **Policy пристрою** — оновити до [aws/thing-policy.json](aws/thing-policy.json) (гілка `jobs/*`).
+6. Запустити Wokwi з 1.0.0. У Serial: `Старт, прошивка 1.0.0`, `[OTA] Прошивку підтверджено`, `[OTA] Робіт немає`.
+7. **IoT Core → Remote actions → Jobs → Create job → Create custom job:** ім'я `ota-1-1-0`,
+   target — thing `esp32-Ruslan_Chernyi`, job file — `job-ota-1.1.0.json` з S3,
+   **Pre-sign resource URLs** → роль `iot_ota_presign_role`, тип — **Snapshot**.
+8. Очікуваний лог:
+
+   ```text
+   [OTA] notify-next - просимо документ роботи
+   [OTA] Робота ota-1-1-0: 1.0.0 -> 1.1.0
+   [OTA] Статус IN_PROGRESS - OK
+   [OTA] Завантажуємо прошивку...
+   [OTA] Пишемо прошивку...
+   [OTA] Готово. Перезавантаження...
+   Старт, прошивка 1.1.0                  ← LED блимнув 3 рази
+   [OTA] Прошивку підтверджено (rollback скасовано)
+   [OTA] Робота ota-1-1-0: 1.1.0 -> 1.1.0
+   [OTA] Вже на цій версії -> SUCCEEDED
+   ```
+
+9. Перевірити: у консолі job → **Succeeded**; у DynamoDB нові записи телеметрії мають `"firmware_version":"1.1.0"`.
+   Скріншоти → `docs/screenshots/`.
+
+Після перезапуску симуляції Wokwi знову вантажить `merged.bin` — тобто 1.0.0. Для повтору — новий job з новим ім'ям.
+
+| Симптом | Причина |
+|---|---|
+| `Update.begin()`: розділ не знайдено | Wokwi запущено з `firmware.bin` замість `merged.bin`, або немає `board_build.partitions` |
+| `[OTA] Невалідний JSON: IncompleteInput` | документ більший за буфер (`MQTT_BUFFER_SIZE`) |
+| підписка є, а `notify-next` не приходить | у політиці немає `iot:Receive` на `jobs/*` |
+| `HTTP-код: 403` | presigned URL прострочений, або в ролі немає `s3:GetObject`, або в job не вибрана pre-sign роль |
+| job вічно `IN_PROGRESS`, пристрій щоразу качає знову | у 1.1.0 забули підняти `FIRMWARE_VERSION` |
+| після OTA знову стара версія | нова не підключилась до MQTT і не викликала `esp_ota_mark_app_valid_cancel_rollback()` → rollback |
+
+Відомі обмеження: прошивка не підписана — пристрій довіряє будь-якому файлу, який віддав S3 за посиланням із job
+(TLS захищає дорогу, а не вантаж; промислова відповідь — Secure Boot / code signing). Якщо нова версія відкотилась
+через rollback, job лишається `IN_PROGRESS` і стара версія спробує оновитись знову після наступного підключення.
 
 ## Порти
 

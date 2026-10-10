@@ -86,6 +86,7 @@ volatile bool jobPending = false;
 volatile bool otaInProgress = false;
 char jobBuf[MQTT_BUFFER_SIZE];
 bool appConfirmed = false;       // нова прошивка вже підтвердила себе (rollback скасовано)
+bool jobsRequested = false;      // після підключення вже спитали jobs/$next/get
 
 /***    Global objects      ***/
 WiFiClientSecure wifiClient;
@@ -179,6 +180,13 @@ void loop() {
   mqttClient.loop();
   reconectionAttempts = 0;
 
+  // роботу могли створити, поки ми були офлайн — ніхто нам про неї не скаже, питаємо самі.
+  // Після OTA цей самий запит поверне нашу роботу ще раз — і ми звітуємо SUCCEEDED
+  if (!jobsRequested) {
+    jobsRequested = true;
+    mqttClient.publish(TOPIC_JOBS_GET, "{}");
+  }
+
   // документ роботи прийшов у колбек — виконуємо тут, а не в колбеку:
   // завантаження триває десятки секунд, а колбек має швидко повернутись
   if (jobPending) {
@@ -261,9 +269,7 @@ bool connectMqtt() {
       Serial.println("[OTA] Прошивку підтверджено (rollback скасовано)");
     }
 
-    // роботу могли створити, поки ми були офлайн — ніхто нам про неї не скаже, питаємо самі.
-    // Після OTA цей самий запит поверне нашу роботу ще раз — і ми звітуємо SUCCEEDED
-    mqttClient.publish(TOPIC_JOBS_GET, "{}");
+    jobsRequested = false;   // після кожного підключення — запитати роботи (див. loop())
     return true;
   }
 
@@ -273,6 +279,27 @@ bool connectMqtt() {
 }
 
 void onMessage(char *topic, byte *payload, unsigned int length){
+  // ═══ КОЛБЕК — ДИСПЕТЧЕР: у PubSubClient він один на всі топіки ═══
+
+  // Є нова робота — просимо документ (у ньому буде свіжий presigned URL)
+  if (strcmp(topic, TOPIC_JOBS_NOTIFY) == 0) {
+    Serial.println("[OTA] notify-next - просимо документ роботи");
+    mqttClient.publish(TOPIC_JOBS_GET, "{}");
+    return;
+  }
+
+  // Документ приїхав. Копіюємо у свій буфер і виходимо — роботу зробить loop()
+  if (strcmp(topic, TOPIC_JOBS_GET_ACCEPTED) == 0) {
+    if (length >= sizeof(jobBuf)) {
+      Serial.println("[OTA] Документ роботи завеликий для буфера");
+      return;
+    }
+    memcpy(jobBuf, payload, length);
+    jobBuf[length] = '\0';
+    jobPending = true;
+    return;
+  }
+
   // payload is NOT null-terminated - copy it into a proper C string for printing
   char message[length + 1];
   memcpy(message, payload, length);
@@ -358,12 +385,13 @@ void publishSensorData(float temperature, float humidity) {
     time_t now = currentTimestamp();
 
     // snprintf обріже рядок, якщо буфер замалий — JSON стане битим,
-    // і правило його не розбере. 160 байт вистачає з запасом
-    char payload[160];
+    // і правило його не розбере. 256 байт вистачає з запасом
+    // firmware_version — у хмарі видно, хто на якій версії; після OTA це доказ, що оновлення відбулось
+    char payload[256];
     snprintf(payload, sizeof(payload),
         "{\"device_id\":\"%s\",\"timestamp\":%lu,"
-        "\"temperature\":%.1f,\"humidity\":%.1f}",
-        DEVICE_PAYLOAD_ID, (unsigned long)now, temperature, humidity);
+        "\"temperature\":%.1f,\"humidity\":%.1f,\"firmware_version\":\"%s\"}",
+        DEVICE_PAYLOAD_ID, (unsigned long)now, temperature, humidity, FIRMWARE_VERSION);
 
     Serial.print("[MQTT] Публікуємо: ");
     Serial.println(payload);
@@ -471,4 +499,165 @@ bool syncNtpTime(void){
 time_t currentTimestamp(void) {
   time_t now = time(nullptr);
   return (now < NTP_VALID_EPOCH) ? 0 : now;  // 0 = NTP not synced yet
+}
+void bootBlink(void) {
+  for (int i = 0; i < BOOT_BLINKS; i++) {
+    digitalWrite(LED_PIN, HIGH);
+    delay(200);
+    digitalWrite(LED_PIN, LOW);
+    delay(200);
+  }
+}
+
+/***    OTA через AWS IoT Jobs    ***/
+
+// Те, що приходить на $next/get/accepted, — обгортка навколо нашого job.json:
+// {"execution":{"jobId":"...","status":"QUEUED","jobDocument":{"operation":"ota","version":"1.1.0","url":"https://..."}}}
+void processJob(void) {
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, jobBuf);
+  if (err) {
+    Serial.print("[OTA] Невалідний JSON: ");
+    Serial.println(err.c_str());   // IncompleteInput = замалий буфер
+    return;
+  }
+
+  // роботи немає — поля execution просто не буде
+  if (!doc["execution"].is<JsonObject>()) {
+    Serial.println("[OTA] Робіт немає");
+    return;
+  }
+
+  // рядки з doc вказують усередину jobBuf — jobId копіюємо в свій буфер
+  char jobId[65];
+  strlcpy(jobId, doc["execution"]["jobId"] | "", sizeof(jobId));
+  const char *op      = doc["execution"]["jobDocument"]["operation"] | "";
+  const char *version = doc["execution"]["jobDocument"]["version"] | "";
+  const char *url     = doc["execution"]["jobDocument"]["url"] | "";
+
+  Serial.print("[OTA] Робота ");
+  Serial.print(jobId);
+  Serial.print(": ");
+  Serial.print(FIRMWARE_VERSION);
+  Serial.print(" -> ");
+  Serial.println(version);
+
+  if (strcmp(op, "ota") != 0 || url[0] == '\0') {
+    Serial.println("[OTA] Невідома операція або немає url");
+    reportJobStatus(jobId, "FAILED");
+    return;
+  }
+
+  // Після перезавантаження та сама робота приходить ще раз (вона IN_PROGRESS).
+  // Версія вже збігається — оновлення справді відбулось
+  if (strcmp(version, FIRMWARE_VERSION) == 0) {
+    Serial.println("[OTA] Вже на цій версії -> SUCCEEDED");
+    reportJobStatus(jobId, "SUCCEEDED");
+    return;
+  }
+
+  reportJobStatus(jobId, "IN_PROGRESS");   // остання можливість щось сказати
+
+  // Два TLS-з'єднання одночасно — заявка на брак пам'яті. Рвемо MQTT самі
+  mqttClient.disconnect();
+  wifiClient.stop();                        // саме stop() — інакше витік mbedTLS
+
+  if (downloadAndFlash(url)) {
+    rebootDevice();                         // MQTT більше не потрібен
+  }
+
+  // не вдалось — піднімаємось назад на старій прошивці і звітуємо
+  Serial.println("[OTA] Оновлення не вдалося, працюємо далі на старій прошивці");
+  if (connectMqtt()) {
+    reportJobStatus(jobId, "FAILED");
+  }
+}
+
+// Топік звіту містить jobId всередині себе — ось навіщо ми його зберігали
+void reportJobStatus(const char *jobId, const char *status) {
+  char topic[128];
+  snprintf(topic, sizeof(topic), "$aws/things/%s/jobs/%s/update", THING_NAME, jobId);
+
+  char payload[128];
+  snprintf(payload, sizeof(payload),
+      "{\"status\":\"%s\",\"statusDetails\":{\"firmware_version\":\"%s\"}}",
+      status, FIRMWARE_VERSION);
+
+  bool ok = mqttClient.publish(topic, payload);
+  Serial.print("[OTA] Статус ");
+  Serial.print(status);
+  Serial.println(ok ? " - OK" : " - помилка публікації");
+}
+
+// Presigned URL живе обмежений час (60–3600 с) — використовуємо його одразу
+bool downloadAndFlash(const char *url) {
+  WiFiClientSecure client;
+  client.setCACert(root_ca);   // S3 підписаний тим самим Amazon Root CA 1, що й IoT Core
+
+  HTTPClient http;
+  http.setTimeout(HTTP_TIMEOUT);
+  if (!http.begin(client, url)) {
+    Serial.println("[OTA] Невалідний URL");
+    return false;
+  }
+
+  Serial.println("[OTA] Завантажуємо прошивку...");
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    // 403 — URL прострочений або в ролі presigning немає s3:GetObject
+    Serial.print("[OTA] HTTP-код: ");
+    Serial.println(code);
+    http.end();
+    return false;
+  }
+
+  // ═══ ЗАПОБІЖНИК: це взагалі прошивка? ═══
+  int len = http.getSize();
+  if (len < OTA_MIN_SIZE) {
+    Serial.print("[OTA] Замало байтів (");
+    Serial.print(len);
+    Serial.println("). Це не прошивка");
+    http.end();
+    return false;
+  }
+
+  // потік з відповіді сервера — те саме джерело байтів для writeStream()
+  bool ok = writeFirmware(*http.getStreamPtr(), len);
+  http.end();
+  return ok;
+}
+
+// ═══ ЗАПИС ПРОШИВКИ У ВІЛЬНИЙ СЛОТ ═══
+// Ми ніде не вказуємо номер слота і не чіпаємо otadata вручну — це робить Update
+bool writeFirmware(Stream &stream, size_t length) {
+  // резервуємо місце; слот вибирає бібліотека
+  if (!Update.begin(length)) {
+    Update.printError(Serial);
+    return false;
+  }
+
+  Serial.println("[OTA] Пишемо прошивку...");
+  size_t written = Update.writeStream(stream);
+  if (written != length) {
+    Serial.print("[OTA] Записано байтів: ");
+    Serial.println(written);
+    Update.abort();           // звільняємо слот, нічого не перемикаємо
+    return false;
+  }
+
+  // перевірка образу і — тільки після неї — запис в otadata
+  if (!Update.end(true)) {
+    Update.printError(Serial);
+    return false;
+  }
+  return true;
+}
+
+void rebootDevice(void) {
+  Serial.println("[OTA] Готово. Перезавантаження...");
+  delay(500);   // даємо Serial дописати
+  // У Wokwi після ESP.restart() нова прошивка може зависнути на старті.
+  // Рестарт через deep sleep на 100 мс працює і в Wokwi, і на справжній платі
+  esp_sleep_enable_timer_wakeup(100 * 1000);
+  esp_deep_sleep_start();
 }
