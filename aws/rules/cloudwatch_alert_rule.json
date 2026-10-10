@@ -1,10 +1,10 @@
 {
-  "sql": "SELECT device_id, temperature, humidity, timestamp() AS received_at FROM 'iot-course/Ruslan_Chernyi/telemetry' WHERE temperature > 28",
+  "sql": "SELECT device_id, temperature, humidity, timestamp() AS received_at FROM 'iot-course/Ruslan_Chernyi/telemetry' WHERE temperature > 28 OR temperature < 15",
   "awsIotSqlVersion": "2016-03-23",
   "actions": [
     {
       "cloudwatchLogs": {
-        "logGroupName": "/aws/iot/rules/overheat",
+        "logGroupName": "/aws/iot/temperature_alerts",
         "roleArn": "arn:aws:iam::<ACCOUNT_ID>:role/iot_rule_cw_role"
       }
     }

@@ -14,7 +14,7 @@
 | Підписки всередині `connectMqtt()` (відновлюються після reconnect) | ✅ |
 | `received_at` з `timestamp()` у правилах, sort key у мс | ✅ |
 | `iot:Receive` у політиці | ✅ |
-| Таблиці `iot_telemetry` і `iot_events`, правила `StoreTelemetry`, `StoreEvents`, `OverheatAlert` | ✅ |
+| Таблиці `iot_telemetry` і `iot_events`, правила `StoreTelemetry`, `StoreEvents`, `cloudwatch_alert_rule` | ✅ |
 | Debounce кнопки | ✅ |
 | `/health`, `/sensors/latest`, `/sensors/history`, `/events`, `POST /actuators/led` | ✅ (треба підправити, див. крок 3) |
 | Grafana з Infinity, колонки `received_at` в мс | ✅ (панелі змінити, див. крок 4) |
@@ -40,8 +40,8 @@
 
 ## Крок 2. AWS: три правила і документи в `aws/` (14 балів)
 
-- [ ] `OverheatAlert`: `WHERE temperature > 28` → `WHERE temperature > 28 OR temperature < 15`
-      (можна перейменувати на `TemperatureAlarm`). Оновити `aws/rules/OverheatAlert.json`.
+- [x] Правило `cloudwatch_alert_rule`: `WHERE temperature > 28 OR temperature < 15` → CloudWatch `/aws/iot/temperature_alerts`
+      (`aws/rules/cloudwatch_alert_rule.json`).
 - [ ] Звірити JSON-и в `aws/` з тим, що реально налаштовано в консолі (вони записані з README домашки).
 - [x] Політика Thing: додати топіки Shadow і Jobs (крок 5–6) — лише для свого Thing:
       `$aws/things/esp32-Ruslan_Chernyi/shadow/*` (`jobs/*` уже додано в кроці 6)

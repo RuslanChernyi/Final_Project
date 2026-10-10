@@ -107,6 +107,7 @@ void goToSleep(void) {
   wifiClient.stop();
   WiFi.disconnect(true);
 
+  sleepSec = 1;
   // таймер: прокинутись через interval_sec
   esp_sleep_enable_timer_wakeup((uint64_t)sleepSec * 1000000ULL);
 

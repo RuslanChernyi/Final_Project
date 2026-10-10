@@ -24,7 +24,8 @@ HTML-сторінка → FastAPI → AWS IoT → ESP32 вмикає/вимик�
 │                                                                          │
 │  Rules Engine:                                                           │
 │    StoreTelemetry ── dynamoDBv2 ──► DynamoDB iot_telemetry               │
-│    OverheatAlert (temp > 28) ─────► CloudWatch /aws/iot/rules/overheat   │
+│    cloudwatch_alert_rule (temp > 28 або < 15)                            │
+│      └──────────────────────► CloudWatch /aws/iot/temperature_alerts     │
 │    StoreEvents (.../events) ─ dynamoDBv2 ─► DynamoDB iot_events          │
 │    (error action у всіх трьох правил → /aws/iot/rules/errors)            │
 └───────────────┬──────────────────────────────────────▲───────────────────┘
@@ -76,7 +77,7 @@ backend/                     FastAPI
 aws/                         документи AWS
   thing-policy.json          політика Thing
   backend-iam-policy.json    inline policy IAM-користувача бекенду
-  rules/*.json               три IoT Rules (StoreTelemetry, StoreEvents, OverheatAlert)
+  rules/*.json               три IoT Rules (StoreTelemetry, StoreEvents, cloudwatch_alert_rule)
   job-ota-1.1.0.json         документ OTA-роботи (AWS IoT Jobs)
   iam/ota-presign-role-*.json  роль, якою AWS IoT підписує посилання на прошивку в S3
 grafana/dashboard.json       експорт дашборду (JSON Model)
@@ -104,14 +105,14 @@ docs/screenshots/            скріншоти для здачі
 | IoT Certificate | (auto-generated) | mTLS-автентифікація ESP32 |
 | IoT Policy | політика пристрою (JSON нижче) | Connect лише своїм Client ID, Publish/Subscribe/Receive лише в `iot-course/Ruslan_Chernyi/*` |
 | IoT Rule | `StoreTelemetry` | телеметрія → DynamoDB, error action → CloudWatch |
-| IoT Rule | `OverheatAlert` | `temperature > 28` → CloudWatch, error action → CloudWatch |
+| IoT Rule | `cloudwatch_alert_rule` | `temperature > 28 OR temperature < 15` → CloudWatch, error action → CloudWatch |
 | IoT Rule | `StoreEvents` | події → DynamoDB `iot_events`, error action → CloudWatch |
 | DynamoDB table | `iot_telemetry` | телеметрія, On-demand |
 | DynamoDB table | `iot_events` | події пристрою (`led_changed`, `dht_read_failed`), On-demand |
 | IAM role | `iot_rule_ddb_role` | дозволяє `StoreTelemetry` робити `dynamodb:PutItem` в `iot_telemetry` |
 | IAM role | `iot_rule_events_ddb_role` | дозволяє `StoreEvents` робити `dynamodb:PutItem` в `iot_events` |
 | IAM role | `iot_rule_cw_role` | дозволяє правилам писати в CloudWatch Logs |
-| CloudWatch log groups | `/aws/iot/rules/errors`, `/aws/iot/rules/overheat` | помилки правил і алерти перегріву |
+| CloudWatch log groups | `/aws/iot/rules/errors`, `/aws/iot/temperature_alerts` | помилки правил і алерти температури |
 | IAM user | `iot-course-backend` | під ним працює FastAPI (ключі в `backend/.env`) |
 | S3 bucket | `<BUCKET>` (приватний) | `firmware_1_1_0.bin` і `job-ota-1.1.0.json` |
 | IAM role | `iot_ota_presign_role` | дозволяє AWS IoT робити `s3:GetObject` у бакеті — для presigned URL |
@@ -181,15 +182,15 @@ FROM 'iot-course/Ruslan_Chernyi/telemetry'
 - Дія: **DynamoDBv2** → `iot_telemetry`, роль `iot_rule_ddb_role` (Create new role)
 - Error action: **CloudWatch Logs** → `/aws/iot/rules/errors`, роль `iot_rule_cw_role`
 
-Правило `OverheatAlert`:
+Правило `cloudwatch_alert_rule`:
 
 ```sql
 SELECT device_id, temperature, humidity, timestamp() AS received_at
 FROM 'iot-course/Ruslan_Chernyi/telemetry'
-WHERE temperature > 28
+WHERE temperature > 28 OR temperature < 15
 ```
 
-- Дія: **CloudWatch Logs** → `/aws/iot/rules/overheat`
+- Дія: **CloudWatch Logs** → `/aws/iot/temperature_alerts`
 - Error action: **CloudWatch Logs** → `/aws/iot/rules/errors`
 
 #### Події: таблиця `iot_events` і правило `StoreEvents`
@@ -515,6 +516,15 @@ LED тримає стан і під час сну (`gpio_hold_en`).
   й чекає пробудження.
 - Створений job чекає до наступного пробудження (≤ `interval_sec`).
 - У Wokwi струм не міряється — економію енергії можна лише оцінити.
+- **У Wokwi сон закінчується скиданням чипа.** Одразу після `[Sleep] Deep Sleep на N с` симулятор скидає чип
+  з `rst:0x8 (TG1WDT_SYS_RESET)` замість справжнього сну. Через це RTC-пам'ять обнуляється (`пробудження №1`
+  щоразу, `interval_sec` знову береться із Shadow), а пристрій стартує одразу, не чекаючи `interval_sec`.
+  Таймер сну при цьому працює: з коротким сном (1 с) після TG1WDT встигає прийти `rst:0x5 (DEEPSLEEP_RESET)`,
+  лічильник росте. Що перевірено і **не** є причиною: утримання LED (`gpio_hold_en`), пробудження кнопкою (ext0
+  з RTC-підтяжкою), `WiFi.disconnect(true)`, тривалість сну, interrupt watchdog (вимкнення TG1 перед сном нічого
+  не змінило). Сон одразу після старту, ще до Wi-Fi, дає те саме — отже, справа не в мережевому коді, а в тому,
+  як Wokwi симулює Deep Sleep для цієї прошивки. Код відповідає документації ESP-IDF; на реальній ESP32 він
+  не перевірявся.
 
 Оцінка (метод Заняття 16, батарея 18650 на 3000 мА·год — навчальний приклад):
 
