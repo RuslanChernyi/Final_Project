@@ -1,54 +1,72 @@
 # Курсовий проєкт: моніторинг мікроклімату на ESP32 + AWS IoT
 
-> **Стан:** базова версія = домашнє завдання до Заняття 14. Що лишилося зробити — у [PLAN.md](PLAN.md).
+ESP32 + AWS IoT Core + DynamoDB + FastAPI + Grafana. ESP32 (Wokwi: DHT22, фоторезистор, кнопка, LED) шле телеметрію
+через MQTT/TLS в AWS IoT Core, Rules Engine складає її в DynamoDB і пише алерти температури в CloudWatch, FastAPI
+віддає дані в Grafana. У зворотний бік: HTML-сторінка → FastAPI → AWS IoT → ESP32 вмикає/вимикає світлодіод
+і підтверджує це подією. Конфігурація пристрою (LED, інтервал) — через Device Shadow, оновлення прошивки — OTA
+через AWS IoT Jobs і S3. Окрема збірка — режим Deep Sleep.
 
-ESP32 + AWS IoT Core + DynamoDB + FastAPI + Grafana. ESP32 (Wokwi, DHT22) шле телеметрію через MQTT/TLS в AWS IoT Core,
-Rules Engine складає її в DynamoDB, FastAPI віддає дані в Grafana. У зворотний бік:
-HTML-сторінка → FastAPI → AWS IoT → ESP32 вмикає/вимикає світлодіод і підтверджує це подією.
+## Демонстрація
+
+Відео роботи системи: зміна даних у Wokwi → оновлення графіка в Grafana → кнопка в Grafana → світлодіод у Wokwi —
+[Project demonstration.mp4](docs/screenshots/Project%20demonstration.mp4).
+
+Оновлення прошивки 1.0.0 → 1.1.0 через AWS IoT Jobs — [OTA from 1_0_0 to 1_1_0.mp4](docs/screenshots/OTA%20from%201_0_0%20to%201_1_0.mp4)
+(див. розділ 8).
 
 ## Архітектура
 
 ```text
-                       ┌──────────────────────────────────┐
-                       │  ESP32 (Wokwi)                   │
-                       │  DHT22 → D4, кнопка → D27,       │
-                       │  LED → D2 (через 220 Ω)          │
-                       └───┬──────────────────────────▲───┘
-      ① телеметрія, 60 с   │                          │  ④ команда
-   .../telemetry           │  MQTT/TLS :8883          │  .../commands/led
-   ⑤ підтвердження         │                          │  {"action":"set_led","value":"on"}
-   .../events              │                          │
-   {"event":"led_changed"} ▼                          │
-┌──────────────────────────────────────────────────────┴───────────────────┐
-│  AWS IoT Core (eu-central-1)                                             │
-│                                                                          │
-│  Rules Engine:                                                           │
-│    StoreTelemetry ── dynamoDBv2 ──► DynamoDB iot_telemetry               │
-│    cloudwatch_alert_rule (temp > 28 або < 15)                            │
-│      └──────────────────────► CloudWatch /aws/iot/temperature_alerts     │
-│    StoreEvents (.../events) ─ dynamoDBv2 ─► DynamoDB iot_events          │
-│    (error action у всіх трьох правил → /aws/iot/rules/errors)            │
-└───────────────┬──────────────────────────────────────▲───────────────────┘
-                │                                      │ ③ iot-data Publish (HTTPS)
-                ▼                                      │
-        ┌──────────────────┐   ② Query        ┌────────┴───────────────────┐
-        │  DynamoDB        │ ───────────────► │  FastAPI  :8000            │
-        │  iot_telemetry   │                  │  GET  /sensors/latest      │
-        │  iot_events      │                  │  GET  /sensors/history     │
-        └──────────────────┘                  │  GET  /events              │
-                                              │  POST /actuators/led       │
-                                              └──▲─────────────────▲───────┘
-                                     GET (JSON)  │                 │ POST (fetch)
-                                  ┌──────────────┴──────┐   ┌──────┴──────────────┐
-                                  │ Grafana :3000       │   │ web/index.html      │
-                                  │ Infinity datasource │   │ кнопки Увімк/Вимк   │
-                                  └─────────────────────┘   └─────────────────────┘
+                 ┌─────────────────────────────────────────────────────┐
+                 │  ESP32 (Wokwi), прошивка 1.0.0 → 1.1.0              │
+                 │  DHT22 → D4, фоторезистор → D34,                    │
+                 │  кнопка → D27, LED → D2 (через 220 Ω)               │
+                 └───────┬────────────────────▲───────────────────▲────┘
+  ① .../telemetry 60 с   │  MQTT/TLS :8883    │ ④ commands/led    │ ⑧ HTTPS GET
+  ⑤ .../events           │  (X.509, mTLS)     │ ⑥ shadow/delta    │   firmware_1_1_0.bin
+  ⑥ shadow/update        │                    │ ⑦ jobs/notify     │   (presigned URL)
+    (reported)           │                    │                   │
+                         ▼                    │                   │
+┌─────────────────────────────────────────────┴───────┐   ┌───────┴────────────────┐
+│  AWS IoT Core (eu-central-1)                        │   │  S3 (приватний бакет)  │
+│                                                     │   │  firmware_1_1_0.bin    │
+│  Rules Engine:                                      │   │  job-ota-1.1.0.json    │
+│    StoreTelemetry ── dynamoDBv2 ─► iot_telemetry    │   └───────▲────────────────┘
+│    StoreEvents ───── dynamoDBv2 ─► iot_events       │           │ presign URL
+│    cloudwatch_alert_rule (temp > 28 або < 15)       │           │ (iot_ota_presign_role)
+│      └─► CloudWatch /aws/iot/temperature_alerts     ├───────────┘
+│    error action ─► CloudWatch /aws/iot/rules/errors │
+│  Device Shadow: desired / reported / delta          │
+│  Jobs: ota-1-1-0 (1.0.0 → 1.1.0)                    │
+└─────────┬──────────────────────────────────▲────────┘
+          │                                  │ ③ iot-data Publish (commands/led),
+          ▼                                  │   Get/UpdateThingShadow (HTTPS)
+┌──────────────────┐    ② Query         ┌────┴──────────────────────┐
+│  DynamoDB        │ ──────────────────►│  FastAPI :8000            │
+│  iot_telemetry   │                    │  GET  /health             │
+│  iot_events      │                    │  GET  /sensors/latest     │
+└──────────────────┘                    │  GET  /sensors/history    │
+                                        │  GET  /events             │
+                                        │  POST /actuators/led      │
+                                        │  GET  /shadow             │
+                                        │  PUT  /shadow/desired     │
+                                        └──▲─────────────────▲──────┘
+                                GET (JSON) │                 │ POST (fetch)
+                    ┌──────────────────────┴──┐    ┌─────────┴───────────┐
+                    │ Grafana :3000           │    │ web/index.html      │
+                    │ Infinity datasource     │    │ кнопки Увімк/Вимк   │
+                    └─────────────────────────┘    └─────────────────────┘
 ```
 
 - **Дані вгору (①②):** ESP32 → `telemetry` → правило `StoreTelemetry` → DynamoDB → FastAPI → Grafana.
 - **Команди вниз (③④):** кнопка на сторінці → `POST /actuators/led` → `iot-data:Publish` → `commands/led` → ESP32 перемикає LED.
-- **Підтвердження (⑤):** після `digitalWrite` ESP32 публікує `led_changed` у `events` → правило `StoreEvents` →
+- **Події (⑤):** `led_changed` (після `digitalWrite`) і `manual_trigger` (кнопка D27) → `events` → правило `StoreEvents` →
   таблиця `iot_events` → `GET /events` → панель Table у Grafana.
+- **Shadow (⑥):** `PUT /shadow/desired` або консоль → `desired` → пристрій отримує `delta`, виконує і звітує `reported`
+  (`led`, `interval_sec`, `firmware_version`).
+- **OTA (⑦⑧):** job `ota-1-1-0` → `jobs/notify-next` → пристрій бере документ роботи, де AWS IoT підставив presigned URL
+  (роль `iot_ota_presign_role`) → завантажує `firmware_1_1_0.bin` з приватного S3 по HTTPS → перезавантаження.
+- **Алерти:** правило `cloudwatch_alert_rule` пише в CloudWatch кожен вимір із `temperature > 28` або `< 15`.
 
 ## Структура репозиторію
 
@@ -71,7 +89,7 @@ firmware/                    PlatformIO-проєкт ESP32
 backend/                     FastAPI
   main.py                    ендпоінти, CORS
   db.py                      запити до DynamoDB
-  iot.py                     публікація команд в AWS IoT
+  iot.py                     публікація команд і Device Shadow (AWS IoT data plane)
   requirements.txt           залежності Python
   .env.example               шаблон змінних середовища (без реальних значень)
 aws/                         документи AWS
@@ -82,7 +100,7 @@ aws/                         документи AWS
   iam/ota-presign-role-*.json  роль, якою AWS IoT підписує посилання на прошивку в S3
 grafana/dashboard.json       експорт дашборду (JSON Model)
 web/index.html               сторінка з кнопками керування LED
-docs/screenshots/            скріншоти для здачі
+docs/screenshots/            скріншоти і відео для здачі
 ```
 
 ## Параметри
@@ -182,6 +200,8 @@ FROM 'iot-course/Ruslan_Chernyi/telemetry'
 - Дія: **DynamoDBv2** → `iot_telemetry`, роль `iot_rule_ddb_role` (Create new role)
 - Error action: **CloudWatch Logs** → `/aws/iot/rules/errors`, роль `iot_rule_cw_role`
 
+![Таблиця iot_telemetry у DynamoDB](docs/screenshots/Telemetry_DynamoDB_table.png)
+
 Правило `cloudwatch_alert_rule`:
 
 ```sql
@@ -192,6 +212,10 @@ WHERE temperature > 28 OR temperature < 15
 
 - Дія: **CloudWatch Logs** → `/aws/iot/temperature_alerts`
 - Error action: **CloudWatch Logs** → `/aws/iot/rules/errors`
+
+Алерти в `/aws/iot/temperature_alerts` — і перегрів (79.6 °C), і холод (−30.8 °C, 10.4 °C):
+
+![CloudWatch: алерти температури](docs/screenshots/Cloudwatch_temperature.png)
 
 #### Події: таблиця `iot_events` і правило `StoreEvents`
 
@@ -210,7 +234,11 @@ FROM 'iot-course/Ruslan_Chernyi/events'
   (роль `iot_rule_ddb_role` дозволяє `PutItem` лише в `iot_telemetry`, тож для нової таблиці — нова роль)
 - Error action: **CloudWatch Logs** → `/aws/iot/rules/errors`, роль `iot_rule_cw_role`
 
-У таблицю потрапляють усі події: `{"event":"led_changed","value":"on"}` і `{"error":"dht_read_failed"}`.
+У таблицю потрапляють усі події: `{"event":"led_changed","value":"on"}`, `{"event":"manual_trigger"}` і `{"error":"dht_read_failed"}`.
+
+![Таблиця iot_events у DynamoDB](docs/screenshots/Event_DynamoDB_table.png)
+
+![Таблиця iot_events: manual_trigger і led_changed](docs/screenshots/Event_DynamoDB_table2.png)
 
 #### Error action: як перевірити, що він працює
 
@@ -319,7 +347,7 @@ uvicorn main:app --reload           # http://127.0.0.1:8000, Swagger — /docs
 | `GET /sensors/latest` | останній запис пристрою з DynamoDB (404, якщо даних немає) |
 | `GET /sensors/history?hours=6` | записи за останні N годин, найстаріші згори (`hours` 1–24, за замовчуванням 6) |
 | `GET /events?limit=10&event=manual_trigger` | останні N подій з `iot_events`, найновіші згори (`limit` 1–100, за замовчуванням 10); `event` — лише події цього типу |
-| `POST /actuators/led` | тіло `{"action":"set_led","value":"on"\|"off"}` → публікація в `commands/led`; інші значення → 422 |
+| `POST /actuators/led` | тіло `{"action":"set_led","value":"on"\|"off"}` → публікація в `commands/led` і той самий стан у Shadow `desired.led`; інші значення → 422 |
 | `GET /shadow` | `desired`, `reported`, `delta` і `version` документа Shadow (404, якщо Shadow ще не створений) |
 | `PUT /shadow/desired` | тіло `{"led":"on"\|"off","interval_sec":10–3600}` (хоча б одне поле) → `desired`; пристрій отримає `delta` |
 
@@ -343,6 +371,28 @@ curl -X PUT localhost:8000/shadow/desired \
 підтверджує подія `led_changed` у топіку `events` (видно в **IoT Core → MQTT test client**).
 
 CORS увімкнено (`allow_origins=["*"]`) — інакше браузер заблокує запити з HTML-сторінки.
+
+#### Device Shadow: перевірка
+
+Shadow зберігає бажаний стан пристрою в хмарі: `desired` — що хоче користувач, `reported` — що пристрій реально робить,
+`delta` — різниця між ними. Змінити `desired` можна через `PUT /shadow/desired` або в консолі
+(**IoT Core → Things → esp32-Ruslan_Chernyi → Device Shadows → Classic Shadow → Edit**).
+Пристрій отримує `delta`, виконує її і звітує новий `reported`.
+
+`desired.interval_sec = 30` — пристрій застосовує новий інтервал публікації:
+
+![Shadow: interval_sec 30 с](docs/screenshots/Publicaiton%20interval%2030s%20from%20shadow_desired.png)
+
+`desired.led` змінено з `off` на `on` — LED у Wokwi засвітився, у `events` пішла подія `led_changed`:
+
+![Shadow: desired.led on — LED увімкнено](docs/screenshots/Changed%20desired%20led%20from%20off%20to%20on%20in%20shadow_2.png)
+
+Після цього `desired.led` повернуто в `off` — пристрій отримав `delta`, вимкнув LED і звітував `reported.led = "off"`:
+
+![Shadow: delta вимикає LED](docs/screenshots/Changed%20desired%20led%20from%20off%20to%20on%20in%20shadow_1.png)
+
+Shadow має пріоритет над `commands/led`: якщо ввімкнути LED командою, а в `desired` лишилось `off`,
+пристрій отримає `delta` і поверне LED до `desired`. Тому `POST /actuators/led` оновлює й `desired.led`.
 
 ### 6. HTML-сторінка керування
 
@@ -368,16 +418,21 @@ Grafana запущена локально на `http://localhost:3000` (дашб
 
 | Панель | Тип | URL | Колонки |
 |---|---|---|---|
-| Температура за останні 30 хвилин | Time series | `/sensors/history?minutes=30` | `timestamp` (epoch, **s**), `temperature` |
-| Поточна вологість | Gauge | `/sensors/latest` | `humidity` |
-| Коли зроблений останній вимір | Stat | `/sensors/latest` | `timestamp` (epoch, **s**) — час пристрою |
+| Температура + Вологість за останні 6 годин | Time series | `/sensors/history?hours=6` | `timestamp` (epoch, **s**), `temperature` (°C, ліва вісь), `humidity` (%, права вісь) |
+| Освітленість | Gauge | `/sensors/latest` | `light_level` (0–4095; червона зона — темно, зелена — норма) |
+| Час роботи пристрою | Stat | `/sensors/latest` | `uptime_sec` (duration) |
 | Коли був отриманий останній вимір | Stat | `/sensors/latest` | `received_at` (epoch, **ms**) — час AWS |
-| Останні події пристрою | Table | `/events?limit=20` | `received_at` (epoch, **ms**), `event`, `value`, `error` |
+| Останні 10 натискань кнопки | Table | `/events?limit=10&event=manual_trigger` | `received_at` (epoch, **ms**), `event` |
+| Керування LED | Canvas | `POST /actuators/led` | дві кнопки (Button, Experimental element types), payload `{"action":"set_led","value":"on"\|"off"}`; Inline editing вимкнено |
 
 `timestamp` ставить пристрій у секундах, `received_at` — правило в мілісекундах. Якщо переплутати тип колонки,
 дата виявиться в 1970-му або в далекому майбутньому.
 
-Дашборд: діапазон часу `Last 30 minutes`, автооновлення `30s`.
+Дашборд: діапазон часу `Last 6 hours`, автооновлення `30s`.
+
+![Grafana: графік, освітленість, uptime, час синхронізації](docs/screenshots/Grafana_dashboard_1.png)
+
+![Grafana: таблиця натискань кнопки](docs/screenshots/Grafana_dashboard_2.png)
 
 ### 8. OTA через AWS IoT Jobs (1.0.0 → 1.1.0)
 
@@ -460,7 +515,8 @@ Grafana запущена локально на `http://localhost:3000` (дашб
    ```
 
 9. Перевірити: у консолі job → **Succeeded**; у DynamoDB нові записи телеметрії мають `"firmware_version":"1.1.0"`.
-   Скріншоти → `docs/screenshots/`.
+
+Запис повного циклу оновлення 1.0.0 → 1.1.0: [OTA from 1_0_0 to 1_1_0.mp4](docs/screenshots/OTA%20from%201_0_0%20to%201_1_0.mp4)
 
 Після перезапуску симуляції Wokwi знову вантажить `merged.bin` — тобто 1.0.0. Для повтору — новий job з новим ім'ям.
 
@@ -526,6 +582,15 @@ LED тримає стан і під час сну (`gpio_hold_en`).
   як Wokwi симулює Deep Sleep для цієї прошивки. Код відповідає документації ESP-IDF; на реальній ESP32 він
   не перевірявся.
 
+  Лог із тестовим сном 1 с: після `Deep Sleep на 1 с` — `TG1WDT_SYS_RESET`, а за ним `DEEPSLEEP_RESET`
+  і `пробудження №2`, `№3` — таймер сну спрацював, RTC-пам'ять збереглась:
+
+  ![Deep Sleep: перший старт і TG1WDT_SYS_RESET після сну](docs/screenshots/deepsleep_1.png)
+
+  ![Deep Sleep: DEEPSLEEP_RESET, пробудження №2](docs/screenshots/deepsleep_2.png)
+
+  ![Deep Sleep: пробудження №3](docs/screenshots/deepsleep_3.png)
+
 Оцінка (метод Заняття 16, батарея 18650 на 3000 мА·год — навчальний приклад):
 
 | Фаза | мА × с |
@@ -543,6 +608,23 @@ LED тримає стан і під час сну (`gpio_hold_en`).
 Головний важіль — секунди радіо, а не струм сну: ранній вихід із чекань і довший `interval_sec` дають більше,
 ніж будь-що інше.
 
+## Відомі обмеження
+
+- **Телеметрія і події публікуються з QoS 0, а не з QoS 1, як у вимогах.** Бібліотека PubSubClient уміє
+  *підписуватись* з QoS 1 (так підписано `commands/led`), але *публікує* лише з QoS 0. QoS 0 — «не більше одного разу»:
+  брокер не підтверджує отримання, і якщо з'єднання обірветься саме під час публікації, цей вимір пропаде.
+  `publish()` повертає `true`, коли пакет пішов у TCP-сокет, а не коли його прийняв AWS. На практиці втрати рідкісні
+  (TLS поверх TCP сам гарантує доставку, поки з'єднання живе), а наступний вимір прийде через `interval_sec`.
+  Для справжнього QoS 1 потрібна інша бібліотека (наприклад, `256dpi/MQTT` або ESP-IDF `esp-mqtt`).
+- **Shadow має пріоритет над `commands/led`.** Команда змінює LED одразу, але якщо в `desired.led` інше значення,
+  пристрій отримає `delta` і поверне LED до `desired`. Тому `POST /actuators/led` після публікації команди записує
+  те саме значення в `desired.led`. Команда, надіслана в `commands/led` в обхід API (наприклад, з MQTT test client),
+  так і буде скасована Shadow.
+- **Deep Sleep — окрема збірка** (`env:esp32dev_deepsleep`), базова — завжди онлайн. У режимі сну `commands/led`
+  майже не доходить, а в Wokwi сон закінчується скиданням `TG1WDT_SYS_RESET` — див. розділ 9.
+- **Прошивка для OTA не підписана** — пристрій довіряє будь-якому файлу за presigned URL із job (див. розділ 8).
+- **`light_level` — сире значення АЦП** (0 = темно, 4095 = світло), а не люкси: модуль фоторезистора в Wokwi не відкалібрований.
+
 ## Порти
 
 | Сервіс | Адреса |
@@ -556,16 +638,9 @@ LED тримає стан і під час сну (`gpio_hold_en`).
 
 1. Wokwi запущено, у Serial — `[MQTT] Публікуємо: ...` і `[MQTT] OK`.
 2. `curl localhost:8000/sensors/latest` повертає свіжий запис.
-3. Grafana показує графік, вологість і час останнього виміру, оновлюється кожні 30 с.
+3. Grafana показує графік температури й вологості, освітленість, uptime і час останнього виміру, оновлюється кожні 30 с.
 4. У MQTT test client підписатися на `iot-course/Ruslan_Chernyi/events`.
-5. На сторінці натиснути **Увімкнути** → LED у Wokwi світиться, у Serial `[LED] Увімкнено`,
+5. У панелі **Керування LED** у Grafana (або на сторінці `web/index.html`) натиснути **Увімкнути** → LED у Wokwi світиться, у Serial `[LED] Увімкнено`,
    у test client — `{"event":"led_changed","value":"on"}`.
-6. Через ≤ 30 с ця подія з'являється в панелі **Останні події пристрою** (і в `curl localhost:8000/events`).
-
-## Приклад дашборду
-<img width="1823" height="962" alt="Screenshot From 2026-10-09 16-48-06" src="https://github.com/user-attachments/assets/82356559-c282-421f-b936-cc47ff726451" />
-
-<img width="1826" height="865" alt="Screenshot From 2026-10-09 16-48-11" src="https://github.com/user-attachments/assets/ec0fcb9a-d3a0-4f84-876a-eadbefca9d45" />
-
-## Photos
-/home/kimo/Pictures/Screenshots/Screenshot From 2026-10-10 20-04-43.png
+6. Натиснути кнопку в Wokwi → через ≤ 30 с подія `manual_trigger` з'являється в панелі **Останні 10 натискань кнопки**
+   (і в `curl "localhost:8000/events?event=manual_trigger"`).

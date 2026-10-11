@@ -17,3 +17,6 @@ __pycache__/
 
 # Everything else
 *.txt
+# Особисті нотатки (не для здачі)
+PLAN.md
+Final_project_requirenments.txt

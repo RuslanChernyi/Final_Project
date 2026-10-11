@@ -5,8 +5,8 @@
     "name": "adbqbrw",
     "namespace": "default",
     "uid": "b798b5b8-f7fb-458f-a700-b26f363bb18a",
-    "resourceVersion": "1791662230983992",
-    "generation": 24,
+    "resourceVersion": "1791664240096007",
+    "generation": 28,
     "creationTimestamp": "2026-10-06T18:44:59Z",
     "labels": {
       "grafana.app/deprecatedInternalID": "4361626117660672"
@@ -15,7 +15,7 @@
       "grafana.app/createdBy": "user:cg0c3qptjhce8f",
       "grafana.app/saved-from-ui": "Grafana v13.2.2 (3db12332b6)",
       "grafana.app/updatedBy": "user:cg0c3qptjhce8f",
-      "grafana.app/updatedTimestamp": "2026-10-10T19:57:10Z"
+      "grafana.app/updatedTimestamp": "2026-10-10T20:30:40Z"
     }
   },
   "spec": {
@@ -306,7 +306,6 @@
               },
               "fieldConfig": {
                 "defaults": {
-                  "unit": "lumens",
                   "min": 0,
                   "max": 4095,
                   "thresholds": {
@@ -635,6 +634,219 @@
             }
           }
         }
+      },
+      "panel-6": {
+        "kind": "Panel",
+        "spec": {
+          "id": 6,
+          "title": "Керування LED",
+          "description": "",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "yesoreyeram-infinity-datasource",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "eg0fpkbl6hog0a"
+                      },
+                      "spec": {
+                        "columns": [],
+                        "filters": [],
+                        "format": "table",
+                        "global_query_id": "",
+                        "parser": "backend",
+                        "root_selector": "",
+                        "source": "url",
+                        "type": "json",
+                        "url": "",
+                        "url_options": {
+                          "data": "",
+                          "method": "GET"
+                        }
+                      }
+                    },
+                    "refId": "A",
+                    "hidden": false
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "canvas",
+            "version": "13.2.2",
+            "spec": {
+              "options": {
+                "inlineEditing": false,
+                "panZoom": false,
+                "root": {
+                  "background": {
+                    "color": {
+                      "fixed": "transparent"
+                    },
+                    "image": {
+                      "field": "",
+                      "fixed": "",
+                      "mode": "fixed"
+                    },
+                    "size": "cover"
+                  },
+                  "border": {
+                    "color": {
+                      "fixed": "dark-green"
+                    }
+                  },
+                  "constraint": {
+                    "horizontal": "left",
+                    "vertical": "top"
+                  },
+                  "elements": [
+                    {
+                      "background": {
+                        "color": {
+                          "fixed": "transparent"
+                        }
+                      },
+                      "border": {
+                        "color": {
+                          "fixed": "dark-green"
+                        },
+                        "radius": 0,
+                        "width": 0
+                      },
+                      "config": {
+                        "align": "center",
+                        "api": {
+                          "contentType": "application/json",
+                          "data": "{\"action\":\"set_led\",\"value\":\"on\"}",
+                          "endpoint": "http://127.0.0.1:8000/actuators/led",
+                          "headerParams": [],
+                          "method": "POST",
+                          "queryParams": [],
+                          "successMessage": "API call was successful"
+                        },
+                        "color": {
+                          "fixed": "#F0F4FD"
+                        },
+                        "size": 14,
+                        "style": {
+                          "variant": "success"
+                        },
+                        "text": {
+                          "fixed": "Увімкнути LED",
+                          "mode": "fixed"
+                        }
+                      },
+                      "connections": [],
+                      "constraint": {
+                        "horizontal": "left",
+                        "vertical": "top"
+                      },
+                      "name": "Увімкнути LED",
+                      "placement": {
+                        "height": 45,
+                        "left": 55,
+                        "top": 55,
+                        "width": 150
+                      },
+                      "type": "button"
+                    },
+                    {
+                      "background": {
+                        "color": {
+                          "fixed": "transparent"
+                        }
+                      },
+                      "border": {
+                        "color": {
+                          "fixed": "dark-green"
+                        },
+                        "radius": 60
+                      },
+                      "config": {
+                        "align": "center",
+                        "api": {
+                          "contentType": "application/json",
+                          "data": "{\"action\":\"set_led\",\"value\":\"off\"}",
+                          "endpoint": "http://127.0.0.1:8000/actuators/led",
+                          "headerParams": [],
+                          "method": "POST",
+                          "queryParams": [],
+                          "successMessage": "API call was successful"
+                        },
+                        "color": {
+                          "fixed": "#F0F4FD"
+                        },
+                        "size": 14,
+                        "style": {
+                          "variant": "destructive"
+                        },
+                        "text": {
+                          "fixed": "Вимкнути LED",
+                          "mode": "fixed"
+                        }
+                      },
+                      "constraint": {
+                        "horizontal": "left",
+                        "vertical": "center"
+                      },
+                      "name": "Вимкнути LED",
+                      "placement": {
+                        "height": 50,
+                        "left": 55,
+                        "top": -4.375,
+                        "width": 147.5
+                      },
+                      "type": "button"
+                    }
+                  ],
+                  "name": "Element 1791663186404",
+                  "placement": {
+                    "height": 100,
+                    "left": 0,
+                    "rotation": 0,
+                    "top": 0,
+                    "width": 100
+                  },
+                  "type": "frame"
+                },
+                "showAdvancedTypes": true,
+                "tooltip": {
+                  "disableForOneClick": false,
+                  "mode": "single"
+                },
+                "zoomToContent": false
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": 0,
+                        "color": "green"
+                      }
+                    ]
+                  },
+                  "color": {
+                    "mode": "thresholds"
+                  }
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
       }
     },
     "layout": {
@@ -686,6 +898,15 @@
               "element": {
                 "kind": "ElementReference",
                 "name": "panel-5"
+              }
+            }
+          },
+          {
+            "kind": "AutoGridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-6"
               }
             }
           }

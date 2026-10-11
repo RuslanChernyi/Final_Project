@@ -19,7 +19,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],          # локальна домашка; у проді — конкретний домен
     allow_methods=["GET", "POST", "PUT"],
-    allow_headers=["Content-Type"],
+    allow_headers=["*"],          # Grafana (кнопка Canvas) шле ще й свої заголовки, не лише Content-Type
 )
 
 
@@ -76,6 +76,12 @@ def actuators_led(command: LedCommand):
         iot.publish_led_command(command.model_dump())
     except ClientError as e:
         raise aws_error(e, "add iot:Publish to the backend IAM user")
+    # Shadow має пріоритет над commands/led: якщо в desired.led лишилось старе значення,
+    # пристрій отримає delta і поверне LED назад. Тому синхронізуємо desired з командою
+    try:
+        iot.update_desired({"led": command.value})
+    except ClientError as e:
+        raise aws_error(e, "add iot:UpdateThingShadow to the backend IAM user")
     return {"status": "sent", "topic": iot.COMMAND_TOPIC, "command": command.model_dump()}
 
 @app.get("/shadow")
